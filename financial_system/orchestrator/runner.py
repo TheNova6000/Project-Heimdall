@@ -5,12 +5,20 @@ from overlapping Risk+Controller verdicts on the same entity. Run across all
 claim from a hand-picked example -- if overlapping cases exist in this
 corpus, this finds them for real.
 
+Also reports the CONTEMPORANEOUS conflict count (Block 5's temporal-honesty
+fix, a993b20) alongside the original offline one -- both real, kept
+distinct: the offline count includes conflicts only visible with
+full-history hindsight on Risk's side; the contemporaneous count uses
+risk_as_of=<payment's own created_at>, i.e. only conflicts where Risk's
+disagreement was genuinely knowable at the moment the decision was made.
+
 Run directly: `python -m financial_system.orchestrator.runner`
 """
 from __future__ import annotations
 
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from financial_system.financial_graph.builder import build_graph
@@ -25,6 +33,17 @@ def run(graph, payment_ids: list[str]) -> list:
     cases = []
     for i, pid in enumerate(payment_ids, 1):
         cases.append(process_payment(graph, pid, investigate=False))
+        if i % 200 == 0 or i == len(payment_ids):
+            print(f"  [{i}/{len(payment_ids)}]")
+    return cases
+
+
+def run_contemporaneous(graph, payment_ids: list[str]) -> list:
+    cases = []
+    for i, pid in enumerate(payment_ids, 1):
+        payment = graph.get_node(pid)
+        as_of = datetime.fromisoformat(payment.properties["created_at"])
+        cases.append(process_payment(graph, pid, investigate=False, risk_as_of=as_of))
         if i % 200 == 0 or i == len(payment_ids):
             print(f"  [{i}/{len(payment_ids)}]")
     return cases
@@ -81,5 +100,14 @@ if __name__ == "__main__":
     cases = run(graph, payment_ids)
 
     passed = print_report(cases)
+
+    print("\n-- Contemporaneous conflicts (Block 5 temporal-honesty fix) --")
+    contemporaneous_cases = run_contemporaneous(graph, payment_ids)
+    n_contemporaneous = sum(1 for c in contemporaneous_cases if c.conflicts)
+    n_offline = sum(1 for c in cases if c.conflicts)
+    print(f"Offline (full-history) conflicts: {n_offline}/{len(payment_ids)}")
+    print(f"Contemporaneous (decision-time-honest) conflicts: {n_contemporaneous}/{len(payment_ids)}")
+    print("Both real, kept distinct -- see this file's own module docstring.")
+
     print("\nPHASE 8: PASS" if passed else "\nPHASE 8: FAIL (no Risk+Controller overlap found in this corpus)")
     sys.exit(0 if passed else 1)
