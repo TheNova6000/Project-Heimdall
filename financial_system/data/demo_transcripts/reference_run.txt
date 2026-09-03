@@ -33,7 +33,7 @@ Executing...
 SCREEN 4 -- OUTCOME BECOMES A FINANCIAL EVENT
 ============================================================
 Gateway outcome:   SUCCESS
-Event recorded:    ActionOutcomeObserved  at 2026-09-03T13:38:05.929546+00:00
+Event recorded:    ActionOutcomeObserved  at 2026-09-03T16:42:00.528201+00:00
 
 Payment status (projected from the event, not hand-edited): success
 Failure reason:    None
@@ -50,17 +50,17 @@ Reason:                  payment pay_7db1e1a7f4 is not currently failed (status=
 ============================================================
 SUPPORTING VIEW -- ONE SHARED FINANCIAL WORLD
 ============================================================
-Payment pay_f63eecc054 -- multiple agents, same real payment, real disagreement:
+Payment pay_c7141196c8 -- multiple agents, same real payment, real disagreement:
 
-  RISK:       HOLD  (score=0.95)  (4 customer(s) share device dev_0184: max_burst_count=9 payments/60min, burst_amount_cov=0.03998728928478119, min_account_age_days=110.70827546296296)
-  RECOVERY:   RETRY  (score=0.45)  (failure_reason=insufficient_funds is recoverable; category's own historical retry-success rate is 45% (a base rate, not a per-instance guess))
+  RISK:       HOLD  (score=0.85)  (4 customer(s) share device dev_0184: max_burst_count=5 payments/60min, burst_amount_cov=0.0502833976742492, min_account_age_days=110.70827546296296)
+  RECOVERY:   RETRY  (score=0.8)  (failure_reason=timeout is recoverable; category's own historical retry-success rate is 80% (a base rate, not a per-instance guess))
 
   CONFLICT DETECTED (not silently averaged away):
   - Risk flags HOLD on this customer's device while Recovery independently proposes RETRY on this payment -- recommend REVIEW before executing the retry.
 
   POLICY
-    Recovery proposed RETRY (category base rate 45%)
-    Expected utility: Rs.-2174.10 (value Rs.4885.61, fee Rs.97.71, HIGH-risk fraud exposure Rs.4274.91)
+    Recovery proposed RETRY (category base rate 80%)
+    Expected utility: Rs.-435.17 (value Rs.4580.70, fee Rs.91.61, HIGH-risk fraud exposure Rs.4008.11)
     -> BLOCK (R0_RECOVERY_EV_NEGATIVE_BLOCK)
 
 ============================================================

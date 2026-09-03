@@ -44,6 +44,7 @@ population-scale one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.recovery.signals import RecoverySignals, compute_recovery_signals
@@ -97,26 +98,44 @@ class ExpectedValueResult:
     evidence: list[str]
 
 
-def _device_risk_tier(graph: GraphRepository, payment_id: str) -> str:
+def _device_risk_tier(graph: GraphRepository, payment_id: str, as_of: datetime | None) -> str:
     device_edges = graph.edges_from(payment_id, "used_device")
     if not device_edges:
         return "NONE"
     device_id = device_edges[0].object_id
-    sharers = graph.edges_to(device_id, "uses")
-    if len(sharers) < 2:
+    # Single as_of-aware call, not a separate unfiltered "does it have >=2
+    # sharers" gate followed by a scoped score -- the gate and the score
+    # must see the same observation set, or the gate itself leaks future
+    # sharers (Block 5's finding: full-history is a strict superset of
+    # what's known at any earlier as_of, so an unfiltered gate can approve
+    # scoring a device that, as of this payment, doesn't have 2 sharers yet).
+    signals = compute_device_risk_signals(graph, device_id, as_of)
+    if signals.n_sharers < 2:
         return "NONE"
-    signals = compute_device_risk_signals(graph, device_id)
     score, _ = score_signals(signals)
     return risk_tier(score)
 
 
 def compute_expected_value(graph: GraphRepository, payment_id: str,
-                            signals: RecoverySignals | None = None) -> ExpectedValueResult | None:
+                            signals: RecoverySignals | None = None,
+                            as_of: datetime | None = None) -> ExpectedValueResult | None:
     """None if this payment isn't a case Recovery would even consider retrying
     (not failed, no known category, or a non-recoverable category) -- EV only
     has something to say about payments where the category-level answer is
     already RETRY; everywhere else Recovery's existing logic is untouched and
-    this module has nothing to add."""
+    this module has nothing to add.
+
+    as_of defaults to the payment's OWN created_at, not "no scoping" --
+    unlike Risk's own opt-in default (which preserves Phase 6's offline
+    full-history benchmark unchanged), EV's whole job is "decide about this
+    payment at its own decision moment," so temporal honesty is the
+    correct default here, not something a caller must remember to request
+    (Block 5's hostile audit: without this, 17/20 real EV divergences were
+    driven by a device-risk score inflated by evidence that didn't exist
+    yet at decision time). There is deliberately no way to ask this
+    function for the old, unscoped behavior -- to compare against it,
+    call compute_device_risk_signals(graph, device_id, as_of=None)
+    directly, the same lower-level opt-in every other caller uses."""
     if signals is None:
         signals = compute_recovery_signals(graph, payment_id)
 
@@ -127,8 +146,11 @@ def compute_expected_value(graph: GraphRepository, payment_id: str,
 
     payment = graph.get_node(payment_id)
     value = float(payment.properties.get("amount", 0.0)) if payment else 0.0
+    if as_of is None and payment is not None:
+        created_at = payment.properties.get("created_at")
+        as_of = datetime.fromisoformat(created_at) if created_at else None
 
-    tier = _device_risk_tier(graph, payment_id)
+    tier = _device_risk_tier(graph, payment_id, as_of)
     harm_rate = RISK_HARM_RATE_BY_TIER[tier]
 
     fee_cost = FEE_RATE * value

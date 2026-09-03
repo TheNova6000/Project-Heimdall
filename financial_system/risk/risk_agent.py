@@ -27,6 +27,8 @@ never to produce the score itself. `decision`/`proposed_action` come from
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from financial_system.discovery_adapter.investigate import investigate_evidence
 from financial_system.discovery_adapter.models import InvestigationRequest, InvestigationResult, InvestigationStatus
 from financial_system.financial_graph.repository import GraphRepository
@@ -72,8 +74,9 @@ def _to_verdict(signals: RiskSignals, score: float, metrics: dict[str, float],
     )
 
 
-def run_risk_for_device(graph: GraphRepository, device_id: str, investigate: bool = False) -> AgentVerdict:
-    signals = compute_device_risk_signals(graph, device_id)
+def run_risk_for_device(graph: GraphRepository, device_id: str, investigate: bool = False,
+                         as_of: datetime | None = None) -> AgentVerdict:
+    signals = compute_device_risk_signals(graph, device_id, as_of)
     score, metrics = score_signals(signals)
     tier = risk_tier(score)
 

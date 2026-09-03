@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from financial_system.action.action_store import ActionStore
@@ -152,10 +153,21 @@ def supporting_view(graph):
     # across dataset regenerations. This is stronger evidence than three
     # unrelated verdicts: it's two independently-correct agents disagreeing
     # about the SAME real payment.
+    #
+    # risk_as_of=<this payment's own created_at> -- a temporal-leakage bug
+    # found by this project's own hostile audit (Block 5): Risk's device
+    # signal, computed over a device's ENTIRE history, could rate a device
+    # HIGH-risk using OTHER customers' payments that happened AFTER the
+    # payment being decided. Scanning with risk_as_of ensures the conflict
+    # shown here is a genuinely contemporaneous disagreement, not a
+    # hindsight one -- see financial_system/risk/signals.py.
     state = FinancialStateStore(STATE_DB)
-    payment_ids = [dict(r)["payment_id"] for r in state.all_rows("payments")]
+    payment_rows = list(state.all_rows("payments"))
     conflict_case = next(
-        (c for c in (process_payment(graph, pid, investigate=False) for pid in payment_ids)
+        (c for c in (
+            process_payment(graph, dict(r)["payment_id"], investigate=False,
+                             risk_as_of=datetime.fromisoformat(dict(r)["created_at"]))
+            for r in payment_rows)
          if c.conflicts),
         None,
     )

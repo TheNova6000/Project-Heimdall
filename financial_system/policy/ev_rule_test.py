@@ -2,14 +2,21 @@
 Phase 5 (expected-value Recovery decisioning) Policy-integration regression.
 Two things must both hold:
 
-  (a) R0_RECOVERY_EV_NEGATIVE_BLOCK fires exactly on the 20 real payments
+  (a) R0_RECOVERY_EV_NEGATIVE_BLOCK fires exactly on the 10 real payments
       Phase 3's evaluation found (expected_value_runner.py) -- not a
-      resimulated number, the literal same 20 payment_ids.
-  (b) For every OTHER category-RETRY-eligible payment (the 124 with
+      resimulated number, the literal same 10 payment_ids.
+  (b) For every OTHER category-RETRY-eligible payment (the 134 with
       EV > 0), passing ev_result changes NOTHING: outcome/rule_id are
       byte-identical to calling evaluate() the old way, without ev_result
       at all. This is the backward-compatibility guarantee R0's own
       docstring claims -- proven here, not just asserted in a comment.
+
+Updated post-Block-5 (temporal-leakage fix, financial_system/risk/signals.py
++ financial_system/recovery/expected_value.py's as_of default): the set
+dropped from 20 to 10 because compute_expected_value() now defaults to
+using each payment's OWN created_at as as_of, and 10 of the original 20
+were only HIGH-tier due to a device-risk score inflated by OTHER
+customers' payments that happened AFTER the payment being decided.
 
 Run directly: `python -m financial_system.policy.ev_rule_test`
 """
@@ -24,16 +31,15 @@ from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.recovery.signals import compute_recovery_signals
 from financial_system.verdict import AgentVerdict
 
-# The exact 20 found by expected_value_runner.py against the current
-# committed dataset -- pinned here so a future dataset change (which would
-# change these IDs, since they're uuid4()-based) makes this test fail
-# loudly instead of silently drifting.
+# The exact 10 found by expected_value_runner.py against the current
+# committed dataset, post-Block-5 fix -- pinned here so a future dataset
+# change (which would change these IDs, since they're uuid4()-based) makes
+# this test fail loudly instead of silently drifting.
 EXPECTED_DIVERGING = {
-    "pay_f63eecc054", "pay_c7141196c8", "pay_b9506fe143", "pay_e7a22834d1",
-    "pay_142476e162", "pay_5d73bf7b12", "pay_cde0c881c3", "pay_056db81f05",
-    "pay_2fe06478ef", "pay_7171c93680", "pay_ef36354524", "pay_c2e2864673",
-    "pay_90642b0ef1", "pay_99ff28b518", "pay_c8f5006349",
-}  # first 15 printed by the runner -- the remaining 5 are checked by count, not by literal ID
+    "pay_c7141196c8", "pay_b9506fe143", "pay_e7a22834d1", "pay_142476e162",
+    "pay_5d73bf7b12", "pay_cde0c881c3", "pay_056db81f05", "pay_2fe06478ef",
+    "pay_ef36354524", "pay_ab3d75e707",
+}
 
 
 def run_unit_cases() -> bool:
@@ -119,11 +125,11 @@ def run_corpus_regression() -> bool:
 
     print(f"Checked {n_checked} category-RETRY-eligible payments.")
     print(f"Diverging (R0 fired): {len(diverging_found)}")
-    ok_count = len(diverging_found) == 20
-    print(f"[{'PASS' if ok_count else 'FAIL'}] Divergence count == 20 (got {len(diverging_found)})")
+    ok_count = len(diverging_found) == 10
+    print(f"[{'PASS' if ok_count else 'FAIL'}] Divergence count == 10 (got {len(diverging_found)})")
 
     ok_ids = EXPECTED_DIVERGING <= diverging_found
-    print(f"[{'PASS' if ok_ids else 'FAIL'}] All 15 pinned payment_ids are among the diverging set")
+    print(f"[{'PASS' if ok_ids else 'FAIL'}] All 10 pinned payment_ids are among the diverging set")
 
     ok_no_mismatch = not mismatches
     print(f"[{'PASS' if ok_no_mismatch else 'FAIL'}] No non-diverging payment's outcome changed "

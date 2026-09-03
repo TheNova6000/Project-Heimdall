@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from financial_system.financial_graph.queries import edges_to_as_of
 from financial_system.financial_graph.repository import GraphRepository
 
 BURST_WINDOW_MINUTES = 60
@@ -47,10 +48,17 @@ class RiskSignals:
     evidence: list[str] = field(default_factory=list)
 
 
-def _payments_on_device(graph: GraphRepository, device_id: str) -> list[tuple[str, object]]:
-    """[(customer_id, payment_node), ...] for every payment made using this device."""
+def _payments_on_device(graph: GraphRepository, device_id: str,
+                         as_of: datetime | None = None) -> list[tuple[str, object]]:
+    """[(customer_id, payment_node), ...] for every payment made using this
+    device -- every payment ever observed by default (unchanged from
+    before Block 5), or only those at or before as_of when a caller
+    explicitly opts into temporally-scoped observation (see
+    financial_graph/queries.py::edges_to_as_of)."""
     results = []
-    for e in graph.edges_to(device_id, "used_device"):
+    edges = (edges_to_as_of(graph, device_id, "used_device", as_of) if as_of is not None
+             else graph.edges_to(device_id, "used_device"))
+    for e in edges:
         payment = graph.get_node(e.subject_id)
         if not payment:
             continue
@@ -79,8 +87,9 @@ def _densest_window(timestamps: list[datetime], window: timedelta) -> list[int]:
     return best
 
 
-def compute_device_risk_signals(graph: GraphRepository, device_id: str) -> RiskSignals:
-    pairs = _payments_on_device(graph, device_id)
+def compute_device_risk_signals(graph: GraphRepository, device_id: str,
+                                 as_of: datetime | None = None) -> RiskSignals:
+    pairs = _payments_on_device(graph, device_id, as_of)
     sharer_ids = sorted({cid for cid, _ in pairs})
     n_sharers = len(sharer_ids)
 

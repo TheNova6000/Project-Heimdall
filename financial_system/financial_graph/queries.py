@@ -6,10 +6,41 @@ BankTransaction (plus Fee/Refund) using nothing but graph edges?
 """
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.financial_state.store import FinancialStateStore
+
+
+def edges_to_as_of(graph: GraphRepository, object_id: str, relation: str, as_of: datetime,
+                    timestamp_field: str = "created_at") -> list:
+    """The observation boundary a temporally-scoped agent needs, built once
+    here rather than reimplemented per-agent. Block 5's hostile audit found
+    Risk's device-sharing signal computed over a device's ENTIRE observed
+    history regardless of decision time -- a real, measured leak (81/143
+    payments on shared devices showed a full-history-vs-as-of tier
+    mismatch, always in the over-flagging direction, since full history is
+    a superset of what's known as-of any earlier point). This is the fix's
+    shared primitive: GraphRepository itself stays a plain current-state
+    store (no schema migration, no per-node-type temporal column), but any
+    caller that needs a temporally honest observation set gets one edge
+    query at a time, filtered by the SUBJECT node's own timestamp -- an
+    edge whose subject doesn't exist yet at as_of carries no evidence at
+    that decision time, structurally, not by agent-specific logic.
+    Opt-in: omitting as_of at the call site (graph.edges_to() directly)
+    preserves every existing caller's current behavior exactly."""
+    edges = graph.edges_to(object_id, relation)
+    result = []
+    for e in edges:
+        subject = graph.get_node(e.subject_id)
+        if subject is None:
+            continue
+        ts = subject.properties.get(timestamp_field)
+        if ts is not None and datetime.fromisoformat(ts) > as_of:
+            continue
+        result.append(e)
+    return result
 
 # Which property (or sum of properties) counts as "the amount" for a node type,
 # for relevance ranking -- e.g. discovery_adapter's retriever prioritizing which

@@ -20,6 +20,8 @@ orchestrator's job is coordination, not becoming a mysterious fourth brain).
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.orchestrator.compound_case import CompoundCase, merge
 from financial_system.orchestrator.events import agents_for_events, classify_event_types
@@ -28,7 +30,14 @@ from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.risk.risk_agent import run_risk_for_device
 
 
-def process_payment(graph: GraphRepository, payment_id: str, investigate: bool = False) -> CompoundCase:
+def process_payment(graph: GraphRepository, payment_id: str, investigate: bool = False,
+                     risk_as_of: datetime | None = None) -> CompoundCase:
+    """risk_as_of: opt-in temporal scope for Risk's device-sharing signal
+    (Block 5's hostile audit -- Risk's signal is computed over a device's
+    entire observed history by default, which leaks future evidence into
+    earlier decisions; see financial_system/risk/signals.py). Omitting it
+    preserves this function's exact prior behavior -- Phase 8's own proven
+    25-conflict full-corpus result is unaffected unless a caller opts in."""
     events = classify_event_types(graph, payment_id)
     invoked = agents_for_events(events)
 
@@ -46,7 +55,8 @@ def process_payment(graph: GraphRepository, payment_id: str, investigate: bool =
             device_id = device_edges[0].object_id
             sharer_edges = graph.edges_to(device_id, "uses")
             if len(sharer_edges) >= 2:   # signals.py's own definition of "carries a network signal"
-                risk_verdict = run_risk_for_device(graph, device_id, investigate=investigate)
+                risk_verdict = run_risk_for_device(graph, device_id, investigate=investigate,
+                                                    as_of=risk_as_of)
 
     if "recovery" in invoked:
         recovery_verdict = run_recovery_for_payment(graph, payment_id, investigate=investigate)
