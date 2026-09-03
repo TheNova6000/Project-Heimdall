@@ -12,6 +12,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from financial_system.discovery_adapter.models import InvestigationResult
 from financial_system.verdict import AgentVerdict
 
 
@@ -28,6 +29,16 @@ class CompoundCase(BaseModel):
     shared_evidence: list[str] = []
     investigations: list[str] = []      # non-null investigation_ids across verdicts
     conflicts: list[str] = []
+
+    # Populated only when a real conflict exists AND the caller opts into
+    # investigate=True -- Discovery.AI reasoning over the SPECIFIC evidence
+    # behind a genuine cross-domain disagreement, using the real multi-step
+    # loop (financial_system/discovery_adapter/investigate.py). Purely
+    # explanatory: this NEVER feeds back into controller_verdict/risk_verdict/
+    # recovery_verdict's decision/decision_score/proposed_action, or into the
+    # EV/Policy pipeline -- same kind-1 decides/kind-3 explains firewall this
+    # project has enforced everywhere else.
+    conflict_investigation: Optional[InvestigationResult] = None
 
 
 def _dedup(*lists: list[str]) -> list[str]:

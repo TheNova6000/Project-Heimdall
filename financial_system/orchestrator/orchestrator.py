@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from financial_system.discovery_adapter.investigate import investigate_evidence
+from financial_system.discovery_adapter.models import InvestigationRequest, InvestigationResult, InvestigationStatus
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.orchestrator.compound_case import CompoundCase, merge
 from financial_system.orchestrator.events import agents_for_events, classify_event_types
@@ -61,4 +63,34 @@ def process_payment(graph: GraphRepository, payment_id: str, investigate: bool =
     if "recovery" in invoked:
         recovery_verdict = run_recovery_for_payment(graph, payment_id, investigate=investigate)
 
-    return merge(payment_id, events, invoked, controller_verdict, risk_verdict, recovery_verdict)
+    case = merge(payment_id, events, invoked, controller_verdict, risk_verdict, recovery_verdict)
+
+    # Real cross-domain investigation, only when a genuine conflict exists AND
+    # the caller opts in -- Recovery's own investigation trigger (unrecognized
+    # failure_reason) never fires on this dataset (Block 1: 0/1000 unknown
+    # categories); a real cross-domain conflict is where genuine ambiguity
+    # actually shows up. Purely explanatory: reuses the same multi-step
+    # investigation loop already proven (financial_system/discovery_adapter/
+    # investigate.py), asks about the SPECIFIC evidence behind this
+    # disagreement, and the result is attached to the case for audit -- it
+    # never touches any verdict's decision/decision_score/proposed_action or
+    # feeds into the EV/Policy pipeline (the same firewall Controller's own
+    # investigation already respects).
+    if investigate and case.conflicts and risk_verdict is not None and recovery_verdict is not None:
+        question = (
+            f"Risk independently flags this payment's device as {risk_verdict.decision} "
+            f"(score={risk_verdict.decision_score:.2f}, reason: {risk_verdict.reason}). "
+            f"Recovery independently proposes {recovery_verdict.decision} on this payment "
+            f"(category base rate {recovery_verdict.decision_score:.0%}, reason: {recovery_verdict.reason}). "
+            f"Given the evidence actually connected to this specific payment, is there anything "
+            f"that makes retrying it look more or less safe than these two aggregate signals "
+            f"already suggest on their own?"
+        )
+        request = InvestigationRequest(subject_type="Payment", subject_id=payment_id, question_text=question)
+        prefilled = InvestigationResult(
+            request=request, status=InvestigationStatus.UNEXPLAINED,
+            evidence=list(dict.fromkeys(risk_verdict.evidence + recovery_verdict.evidence)),
+        )
+        case.conflict_investigation = investigate_evidence(request, prefilled, graph)
+
+    return case
