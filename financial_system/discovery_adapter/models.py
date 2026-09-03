@@ -37,13 +37,20 @@ class InvestigationResult(BaseModel):
 
     # 4B -- only populated when executed_4b is True
     executed_4b: bool = False
-    ground_decision_action: Optional[str] = None   # decide_next_step's action, logged not acted on
+    ground_decision_action: Optional[str] = None   # the FINAL step's action (answer/decompose/boundary_hit)
     inferences: list[str] = []               # narrative connections Discovery.AI drew
     hypotheses: list[str] = []                # uninvestigated claims -- never promoted to facts
     investigation_confidence: Optional[float] = None
     narrative: Optional[str] = None
     resources_offered: int = 0                # full neighborhood size, before max_results truncation
     resources_used: int = 0                    # actually sent to gather_evidence
+    decompose_steps: list[dict] = []          # multi-step trace: [{step, action, reasoning,
+                                                # sub_question?, sub_answer?}, ...] -- decide_next_step's
+                                                # decompose decisions are now genuinely acted on (up to
+                                                # a step budget the calling agent owns, not the model),
+                                                # not just logged. Empty list means the investigation
+                                                # answered (or boundary-hit) in a single step, same as
+                                                # the old one-shot behavior.
 
     # LLM call metrics (call_metrics.py) -- only populated when executed_4b is True
     llm_latency_seconds: Optional[float] = None

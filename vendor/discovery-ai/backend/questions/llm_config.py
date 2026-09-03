@@ -20,20 +20,21 @@ if os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
 # See Implimentation-Research/Free-LLM-APIs.md for why these three, and why not
 # Claude/OpenAI (no usable free tier for this project).
 GROUND_MODEL_CHAIN: list[str] = [
-    # Groq first (hackathon-day reliability, docs/Memory.md): Gemini's free-tier
-    # daily quota (500/day, account-wide) is exhausted as of today and Cerebras
-    # needs billing set up — both fail every single call right now, and each
-    # failed attempt still costs real wall-clock time (a fast 429/402, but not
-    # free) before falling through. Putting the provider that actually works
-    # first means most calls succeed on attempt 1 instead of paying that latency
-    # tax every time. Revert this ordering once Gemini's quota resets tomorrow —
-    # it's a today-specific fix, not a permanent priority change.
-    "groq/openai/gpt-oss-20b",  # verified against live GET /v1/models — supports
-    # `structured_outputs`, not just `json_mode`.
+    # Gemini first (today-specific reliability, 2026-09-03, same pattern as the
+    # prior Groq-first reordering this comment block used to describe): verified
+    # directly against structured_call() this session -- Groq and Cerebras both
+    # fail on EVERY key in their pools right now (403 "Access denied. Please
+    # check your network settings." / repeated across 8 keys each), while
+    # google/gemini-flash-lite-latest succeeds in ~8s. Confirmed live, not
+    # assumed. Revert this ordering once Groq/Cerebras reachability is restored
+    # -- it's a today-specific fix, not a permanent priority change, same as the
+    # reasoning this block has already gone through once before.
     "google/gemini-flash-lite-latest",  # "google/" -> Provider.GENAI -> google-genai
     # SDK (current). "gemini/" -> Provider.GEMINI -> google-generativeai (deprecated
     # upstream, Aug 2026). Model alias avoids hardcoding a version number that gets
     # deprecated (gemini-2.5-flash-lite already was, mid-2026).
+    "groq/openai/gpt-oss-20b",  # verified against live GET /v1/models — supports
+    # `structured_outputs`, not just `json_mode`.
     "cerebras/gpt-oss-120b",  # verified against live GET /v1/models (only two models
     # offered: gemma-4-31b, gpt-oss-120b).
 ]
@@ -55,11 +56,12 @@ GROUND_MODEL_CHAIN: list[str] = [
 #    Cerebras's gpt-oss-120b (already integrated, already has a working key, a
 #    genuinely large model) covers the same "third independent pool" role.
 MASTER_MODEL_CHAIN: list[str] = [
-    # Groq first — same today-specific reliability reordering as GROUND_MODEL_CHAIN
-    # above; revert once Gemini's daily quota resets.
+    # Gemini first — same today-specific reliability reordering as GROUND_MODEL_CHAIN
+    # above (2026-09-03: Groq/Cerebras both unreachable, Gemini confirmed working);
+    # revert once Groq/Cerebras reachability is restored.
+    "google/gemini-2.5-flash",
     "groq/openai/gpt-oss-120b",  # step up from GROUND_MODEL_CHAIN's 20b variant,
     # same family, verified against live GET /v1/models to support structured_outputs.
-    "google/gemini-2.5-flash",
     "cerebras/gpt-oss-120b",
 ]
 

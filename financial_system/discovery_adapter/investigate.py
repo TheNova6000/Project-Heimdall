@@ -113,24 +113,74 @@ async def _run_4b(graph: GraphRepository, request: InvestigationRequest, result:
         entity_name=f"{request.subject_type}:{request.subject_id}",
         abstraction_name="Financial Reconciliation",
     )
+    retriever = FinancialStateRetriever(graph, neighborhood_fn, reference_amount)
+
+    # Genuine multi-step investigation: decide_next_step's own system prompt says
+    # it is meant to be called REPEATEDLY, with "decompose" driving one more
+    # narrower sub-investigation each time ("Already known" accumulating) --
+    # Phase 4 previously logged this decision without ever acting on it
+    # (single-shot). The step budget below is deliberately the CALLING agent's
+    # choice, not the model's, per GroundDecision's own docstring ("The agent,
+    # not the model, decides afterward whether a 'decompose' verdict is
+    # actually honored... or downgraded to a boundary hit").
+    MAX_STEPS = 3
+    known: list[str] = []
+    steps: list[dict] = []
+    final_answer: str | None = None
+    final_confidence: float | None = None
 
     try:
         with capture_call_metrics() as cm:
-            decision = await decide_next_step(question)
-            result.ground_decision_action = decision.action
+            for step_i in range(MAX_STEPS):
+                decision = await decide_next_step(question, known=known or None)
+                step_record: dict = {"step": step_i, "action": decision.action, "reasoning": decision.reasoning}
+                steps.append(step_record)
 
-            claims = await gather_evidence(
-                question, retrievers=[FinancialStateRetriever(graph, neighborhood_fn, reference_amount)]
-            )
-            result.hypotheses = [
-                f"{c.evidence} (confidence={c.confidence:.2f}, source={c.source.title})" for c in claims
-            ]
+                if decision.action == "answer":
+                    final_answer, final_confidence = decision.answer, decision.confidence
+                    break
+                if decision.action == "boundary_hit":
+                    reason = decision.reasoning or "insufficient information available to this investigation"
+                    final_answer = f"boundary hit: {reason}"
+                    final_confidence = None
+                    break
 
-            draft = await synthesize_answer(question, [c.evidence for c in claims])
+                # decompose -- investigate the ONE sub-question the model named,
+                # then loop back with it folded into "known", exactly the pattern
+                # decide_next_step's own system prompt describes.
+                sub_texts = decision.sub_question_texts or []
+                if not sub_texts:
+                    break  # malformed decompose (no sub-question given) -- stop rather than spin
+                sub_text = sub_texts[0]
+                sub_question = Question(
+                    text=sub_text, rationale=f"Sub-question of: {anchored_text}",
+                    dimension_id="financial_reconciliation", level=QuestionLevel.GROUND,
+                    entity_name=question.entity_name, abstraction_name=question.abstraction_name,
+                )
+                claims = await gather_evidence(sub_question, retrievers=[retriever])
+                sub_draft = await synthesize_answer(sub_question, [c.evidence for c in claims])
+                known.append(f"{sub_text} -> {sub_draft.answer}")
+                step_record["sub_question"] = sub_text
+                step_record["sub_answer"] = sub_draft.answer
+            else:
+                # Step budget exhausted without "answer"/"boundary_hit" -- roll up
+                # whatever was actually learned rather than silently discarding it.
+                if known:
+                    rollup = await synthesize_answer(question, known)
+                    final_answer, final_confidence = rollup.answer, rollup.confidence
+                else:
+                    final_answer = "investigation step budget exhausted with no evidence gathered"
+                    final_confidence = None
 
-        result.narrative = draft.answer
-        result.investigation_confidence = draft.confidence
-        result.inferences = [draft.answer]
+        result.narrative = final_answer
+        result.investigation_confidence = final_confidence
+        result.inferences = [final_answer] if final_answer else []
+        result.hypotheses = [
+            f"step {s['step']}: {s['action']}" + (f" -> {s['sub_question']}" if "sub_question" in s else "")
+            for s in steps
+        ]
+        result.ground_decision_action = steps[-1]["action"] if steps else None
+        result.decompose_steps = steps
         result.executed_4b = True
         result.llm_latency_seconds = cm.metrics.latency_seconds
         result.llm_fallback_events = cm.metrics.fallback_events
