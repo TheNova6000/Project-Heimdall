@@ -37,7 +37,15 @@ def _fresh(path: Path) -> None:
 
 def test_full_corpus_breakdown() -> bool:
     print("-- 1. Full 610-settlement corpus, cross-tabulated against ground-truth root_cause --")
-    state, _ = build_financial_state()
+    # A dedicated db path, not the shared financial_state.db every other
+    # phase's runner reads: build_financial_state() only rebuilds Phase-1
+    # tables, not Phase-2's entity_matches, so calling it against the
+    # shared default here would silently wipe entity_matches for every
+    # other script (found and fixed during the Recovery expected-value
+    # work's regression sweep -- Risk's recall went 96.3% -> 0% from this
+    # exact call before the fix).
+    _fresh(DATA_DIR / "state_ac_corpus.db")
+    state, _ = build_financial_state(db_path=DATA_DIR / "state_ac_corpus.db")
     labels = {}
     with open(GT_PATH, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
