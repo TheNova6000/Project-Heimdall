@@ -1216,3 +1216,25 @@ not just on paper.
   deliberately did not manufacture a reason to add one.
 - Nothing about fraud/credit/loans (Research.md Part C) has been started,
   per this task's explicit scope boundary.
+
+## Heimdall bridge (Working Section 23, bounded implementation, later session)
+
+A later, explicit, user-requested task built one real, working,
+ADDITIVE-ONLY slice of `docs/SIMULATION_ARCHITECTURE_SPEC.md`'s Working
+Section 23 -- not the full observation-boundary/action-writeback bridge the
+spec describes and defers, but a real one-way bridge that transforms a
+completed `Simulation/` run's output into `financial_system/`'s real
+raw-CSV input schema and calls Heimdall's actual, unmodified Phase
+1/2/3/Recovery functions on it. `financial_system/` was not touched
+anywhere (`git diff --stat financial_system/` empty; every file added was
+new, under the new `financial_system/bridges/` directory). `Simulation/`'s
+own engine/world/agent code was likewise not touched -- this entry is the
+only change made under `Simulation/`.
+
+Full field-mapping table, the reasoning for choosing Recovery over
+Risk/Controller, every genuine schema gap found (including a real,
+unfixed, pre-existing bug in `financial_state/builder.py`'s invariant
+self-check, hardcoding the original dataset's path instead of using the
+`raw_dir` it was actually called with), and a real end-to-end run's
+verbatim output live in `financial_system/bridges/README.md`.
+
