@@ -576,3 +576,176 @@ per Rules.md #5)**:
   output shape is an open, deliberately-left decision (see above).
 - Nothing about Phase 3+ (behavioral realism, domain events, scale,
   Heimdall bridge) has been started, per Rules.md #9 — intentionally.
+
+---
+
+# Research + Phase 3 (bounded) — 2026-09-03/04
+
+## Status: research done and written up in full; ONE narrow, cited code
+change made; Phase 3 as a whole (full behavioral-realism swap) is NOT
+complete — this was an explicitly bounded "research + narrow,
+cited implementation" task, not a full Phase 3. `Phases.md`'s Phase 3
+line was deliberately left as "NOT STARTED" rather than marked done, to
+avoid overclaiming; see "What's genuinely done vs. not" below.
+
+All five docs (PRD, Architecture, Rules, Phases, this file) were re-read
+in full before starting, plus the actual code
+(`world/models.py`, `world/engine.py`, `world/agents/*.py`,
+`run_simulation.py`). Baseline confirmed first: 24/24 tests passing
+before any change was made.
+
+## What was researched (full detail in `Simulation/docs/Research.md`)
+
+Five areas, per the task brief: (1) income/spending distributions, (2)
+payment fraud rates and risk factors, (3) credit scoring dynamics, (4)
+loan interest rate mechanics, (5) bank reserve/liquidity behavior. Used
+WebSearch/WebFetch against public sources only (Federal Reserve Board,
+regional Feds — Kansas City, New York, Philadelphia, Dallas, San
+Francisco — BLS, FRED, Stripe's own public documentation, and named
+academic papers) — this specific task had explicit user approval to
+consult real research per the task brief (Rules.md #3's "external
+dataset downloads" bar still applies and was respected: nothing was
+bulk-downloaded, only published summary statistics were cited — see
+Research.md's "What was not downloaded, and why").
+
+**A genuine environment limitation surfaced during this work**: this
+session's WebFetch tool could not extract text from several PDF sources
+(Federal Reserve, NBER, arXiv PDFs all came back as unparsed binary/
+stream data) — apparently a PDF-text-extraction limitation of this
+environment. Findings resting on such a PDF are flagged in Research.md
+as coming from WebSearch's synthesized summary rather than a firsthand
+verified quote, and were treated as weaker evidence accordingly (see
+next section — this is *why* several tempting-looking numbers were
+deliberately not adopted into code).
+
+## What changed in code (exactly one change)
+
+`Simulation/world/engine.py`, `SimulationEngine._run_settlement`'s
+docstring: the T+1 settlement-delay rule's provenance was upgraded from
+a bare "MODELING ASSUMPTION" to "RESEARCH-GROUNDED, WITH A NAMED
+SIMPLIFICATION," citing Stripe's own public documentation ("settlement
+typically takes one to three business days after the transaction") plus
+corroborating industry sources, for the *qualitative* fact that real
+card settlement is genuinely delayed on a roughly 1-3 business day
+scale. **The VALUE was not changed** — it's still exactly T+1, still
+fixed (not RNG-sampled), still drawing zero randomness — because T+1
+already sits inside the cited real range (at its low/conservative end),
+and widening it to a random 1-3 day draw would have perturbed the RNG
+draw sequence for purchases/salary that Phase 2 deliberately protected
+(see this file's Phase 2 section), which this one citation didn't by
+itself justify changing. Net effect on simulation output: **zero** —
+this is a comment-only change, confirmed by the determinism check below
+still passing identically to the pre-change baseline behavior.
+
+## What was deliberately NOT changed, and why (the more important part)
+
+Three other parameters were explicitly eligible for a cited swap per the
+task brief (income distribution shape/params, base daily spend
+probability, opening-balance fraction) and none were changed:
+
+- **Income distribution** (`INCOME_LOGNORMAL_MU`/`_SIGMA`): the
+  log-normal shape is already about as well-supported as real income-
+  distribution literature gets for the non-tail population (confirmed,
+  didn't need changing). A specific `sigma≈0.5` figure from a
+  wage-inequality paper's WebSearch-summarized abstract coincided almost
+  exactly with the existing constant — deliberately NOT adopted because
+  (a) the source PDF couldn't be independently verified (the
+  PDF-extraction limitation above) and (b) "wage dispersion among
+  employed workers" isn't quite the same population as "all persons'
+  income." Adopting a suspiciously-convenient unverified number is
+  exactly the failure mode Rules.md #2 exists to prevent.
+- **Base daily spend probability** (`BASE_DAILY_SPEND_PROB = 0.35`): the
+  Fed's Diary of Consumer Payment Choice looked like the single most
+  promising lead (a widely-cited, real annual survey with a plausible
+  "share of consumers making zero payments on a given day" statistic
+  that would suggest a higher base rate) — but that specific figure
+  could not be verified against any primary source this session could
+  actually read (every DCPC PDF fetched came back unparseable), and even
+  if verified, DCPC counts ALL payments (bills, rent, transfers), not
+  specifically *discretionary* purchases, which is what this constant
+  models — a real definitional gap on top of the verification problem.
+  Left unchanged; flagged in Research.md as a real lead worth revisiting
+  with better tooling.
+- **Opening balance fraction** (`OPENING_BALANCE_FRACTION_RANGE = (0.1,
+  1.0)`): Fed SHED survey data (63% could cover a $400 expense in cash,
+  55% have a 3-month emergency fund) is real and directly fetched, and
+  broadly *consistent* with the current wide uniform range — but it's a
+  point-in-time adequacy statistic, not a distributional shape/range for
+  "opening balance as a fraction of monthly income," so there was no
+  clean number to substitute in. Left unchanged.
+
+A fourth, structural (non-swappable) finding is worth naming here too:
+BLS Consumer Expenditure Survey data shows spend-as-a-share-of-income
+declining as income rises (poorer households spend ≥100% of income;
+richer households save more) — a real pattern this simulation's
+`purchase_amount()` doesn't capture, since it draws purchase size as the
+same fractional range of a person's OWN income regardless of income
+level. Fixing this honestly would require making purchase-amount-as-
+income-fraction itself a function of income level (a new mechanism, not
+a constant swap), which is why it wasn't done here — recorded in
+Research.md as a legitimate target for a future, properly-scoped Phase 3
+continuation.
+
+## Testing — what's actually verified for this session's change
+
+- `python -m pytest tests/ -v` — ran BEFORE any change (baseline: 24/24
+  passing) and AFTER the one docstring edit (24/24 passing, identical —
+  expected, since the change touches no executable logic, only a
+  docstring).
+- Determinism: `python run_simulation.py --seed 42 --population 200
+  --days 60 --outdir output/research_check_a` and `..._check_b`, then
+  `diff -rq` between them — zero differences (exit code 0). Both
+  throwaway directories deleted afterward; `output/sample/` untouched.
+
+## Part C — proposed-only future mechanisms (design, not code)
+
+Written up in full in `Research.md`'s Part C, each grounded in Part A's
+actual numbers, not invented: fraud (calibration target: 17.6 basis
+points of transaction value, Kansas City Fed 2023 data, up from 7.8bps
+in 2011; risk signals: transaction amount + velocity, cited to
+Bhattacharyya et al. 2011 and Dal Pozzolo et al. 2017/2018), credit
+scoring (initial distribution seeded from the Fed's 2007 Report to
+Congress; delinquency-transition-rate targets from FRBNY's Q1 2026
+report, 1.48%-7.10% depending on debt type), and loans (rate = base +
+risk-spread structure per the Fed's own Sept 2025 FEDS Note, with a
+citable spread elasticity of ~5bps/100bps regional default risk for
+unsecured credit vs. ~30bps for mortgages; base-rate plausibility range
+8.73%-19.21% from G.19's 24-month personal loan series). Each proposal
+also names why it's NOT built now — every one of the three needs new
+persistent agent state or a new causal object (account compromise for
+fraud; score as non-ledger-reconciled state for credit; a new
+liability-side `Loan` object with lending-capacity questions Phase 2's
+double-entry design never addressed) that's a real architectural
+decision deserving its own dedicated, reviewed effort, not something to
+bolt on inside a narrow research task. One correction worth flagging for
+whoever eventually builds C.3 (loans): a naive "add a bank reserve-ratio
+constraint" design would be factually backwards for a present-day
+simulation, since the Fed reduced reserve requirements to 0% for all
+depository institutions in March 2020 (Research.md Part A §5) — any
+future lending-capacity constraint should be modeled on Basel/LCR-style
+capital adequacy concepts instead.
+
+## Honest caveats for a future session
+
+- The PDF-extraction limitation (WebFetch returning unparsed binary for
+  Fed/NBER/arXiv PDFs in this environment) is worth checking again in a
+  future session — several genuinely promising leads (the DCPC
+  zero-payment-day statistic in particular) were left unused specifically
+  because this session couldn't independently verify them, not because
+  they're wrong. A session with working PDF extraction (or with the
+  ability to fetch an HTML-rendered version of the same report) could
+  plausibly turn at least one of these into a real, defensible Part B
+  change.
+- `Phases.md`'s Phase 3 line was deliberately NOT updated to "DONE" —
+  this session did the *research* half of Phase 3 thoroughly, but made
+  only one narrow, low-stakes code change, not the full "replace
+  Phase 1's placeholder rules with research-grounded ones" Phase 3
+  describes. Marking it done would overclaim; a future session doing
+  more of Phase 3's actual constant-swapping work should update that
+  line when it's genuinely earned.
+- Nothing in `financial_system/` was touched. No LLM calls were added
+  anywhere. No dataset was bulk-downloaded (see Research.md's "What was
+  not downloaded, and why" for the specific reasoning on each dataset
+  that was considered and rejected for direct download). Fraud/credit/
+  loan mechanisms remain entirely unimplemented — Part C is design-only,
+  per this task's explicit instruction.

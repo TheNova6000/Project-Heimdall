@@ -284,16 +284,38 @@ class SimulationEngine:
         Sweep every Merchant's pending (received-but-not-yet-settled)
         balance into their settled/spendable account.
 
-        MODELING ASSUMPTION (Phases.md Phase 2's "basic settlement
-        between Merchant and Bank", timing rule): proceeds a merchant
-        received on simulated day D become available at the start of day
-        D+1 -- i.e. T+1, a simple named stand-in for real card-network
-        settlement cycles (commonly on the order of 1-2 business days),
-        not calibrated to any specific processor or network. Chosen
-        deliberately non-zero (not same-day/instant) so "received" and
-        "settled" are genuinely distinct states -- that distinction is
-        the entire point of this Phase 2 feature (this task's brief:
-        "rather than money just appearing usable instantly").
+        RESEARCH-GROUNDED, WITH A NAMED SIMPLIFICATION (Phase 3 update,
+        docs/Research.md "Part B"; was previously an unqualified modeling
+        assumption). Real card-network settlement is consistently
+        reported, across multiple independent industry sources, to take
+        on the order of one to three business days after a transaction:
+        Stripe's own public documentation states "settlement typically
+        takes one to three business days after the transaction" for
+        card payments (Stripe, "Payment settlement explained: how it
+        works and how long it takes", stripe.com/resources/more/
+        payment-settlement-explained-how-it-works-and-how-long-it-takes,
+        accessed 2026), and multiple payments-industry processor
+        explainers (e.g. Clearly Payments, "How Long Do Credit Card
+        Payments Take to Settle?", clearlypayments.com) independently
+        report the same 1-3 business day window. That range is what
+        grounds "not instant, on the order of a day or more" as a real
+        fact about card settlement, not an invented one.
+
+        The SPECIFIC choice of exactly T+1 (the low/fastest end of that
+        range, applied uniformly with no variation) remains a named
+        MODELING ASSUMPTION, not itself research-derived: no source
+        above says every merchant settles in exactly 1 day, and this
+        simulation does not model the network/risk-tier/country factors
+        that make real settlement land anywhere in that 1-3 day range.
+        T+1 was kept (over, say, a random 1-3 day draw) because it is
+        the simplest value that still makes "received" and "settled"
+        genuinely distinct states -- that distinction is the entire
+        point of this Phase 2 feature (this task's brief: "rather than
+        money just appearing usable instantly") -- while adding a random
+        settlement delay would perturb the RNG draw sequence for
+        purchases/salary that Phase 2 deliberately avoided disturbing
+        (see Memory.md's Phase 2 section), a change this narrow research
+        finding does not by itself justify.
 
         Because this runs at the very start of `_run_one_day`, before
         that day's purchases can add anything new to a pending account,
