@@ -33,7 +33,7 @@ Executing...
 SCREEN 4 -- OUTCOME BECOMES A FINANCIAL EVENT
 ============================================================
 Gateway outcome:   SUCCESS
-Event recorded:    ActionOutcomeObserved  at 2026-09-03T09:28:09.217446+00:00
+Event recorded:    ActionOutcomeObserved  at 2026-09-03T12:26:59.581644+00:00
 
 Payment status (projected from the event, not hand-edited): success
 Failure reason:    None
@@ -50,9 +50,13 @@ Reason:                  payment pay_7db1e1a7f4 is not currently failed (status=
 ============================================================
 SUPPORTING VIEW -- ONE SHARED FINANCIAL WORLD
 ============================================================
-RECOVERY   pay_f63eecc054: RETRY  (score=0.45)
-CONTROLLER sett_bac5b4c642: PASS
-RISK       dev_0184: HOLD  (score=0.95)
+Payment pay_f63eecc054 -- multiple agents, same real payment, real disagreement:
+
+  RISK:       HOLD  (score=0.95)  (4 customer(s) share device dev_0184: max_burst_count=9 payments/60min, burst_amount_cov=0.03998728928478119, min_account_age_days=110.70827546296296)
+  RECOVERY:   RETRY  (score=0.45)  (failure_reason=insufficient_funds is recoverable; category's own historical retry-success rate is 45% (a base rate, not a per-instance guess))
+
+  CONFLICT DETECTED (not silently averaged away):
+  - Risk flags HOLD on this customer's device while Recovery independently proposes RETRY on this payment -- recommend REVIEW before executing the retry.
 
 ============================================================
 DONE

@@ -133,20 +133,32 @@ FALLBACK:   This step cannot meaningfully fail if Screen 4 succeeded --
 
 ```
 EXPECTED:
-  RECOVERY   pay_XXXXXXXXXX: RETRY or REVIEW  (score=...)
-  CONTROLLER sett_XXXXXXXXXX: PASS or an exception status
-  RISK       dev_XXXX: HOLD or RELEASE  (score=...)
-PROVES:     Three independent domain agents, real verdicts, same graph
-            object used throughout the whole script -- this is the
-            visual proof for "Controller and Risk are real, running on
-            the same substrate," spoken in Screen 2/3's segment of the
-            pitch.
-FALLBACK:   Whatever three lines print here are real regardless of exact
-            values -- narrate generically ("here's Risk's live verdict on
-            a real device, here's Controller's on a real settlement")
-            rather than pre-committing to specific decision values in the
-            spoken script, since these three are the ones most likely to
-            vary payment-to-payment.
+  Payment pay_XXXXXXXXXX -- multiple agents, same real payment, real
+  disagreement:
+
+    RISK:       HOLD  (score=0.NN)  (device-sharing evidence)
+    RECOVERY:   RETRY (score=0.NN)  (category base rate)
+    -- or, depending on which real conflict is found first this run,
+       CONTROLLER: INVESTIGATE + RISK: HOLD instead
+
+  CONFLICT DETECTED (not silently averaged away):
+    - <the specific cross-domain conflict rule that fired>
+PROVES:     Not three disconnected verdicts on three unrelated entities --
+            two independent, correct agents reasoning about the SAME real
+            payment and disagreeing, found live via the identical
+            detect_conflicts() logic Phase 8's 1000-payment batch run
+            uses (financial_system/orchestrator/compound_case.py), not a
+            hardcoded example. This is the live version of the "25 real
+            cross-domain conflicts" figure spoken earlier in the pitch --
+            the strongest available evidence for "one shared world," not
+            three separate demos glued together.
+FALLBACK:   The conflict search re-scans this same fixed dataset every
+            run and is deterministic (confirmed identical across two
+            consecutive runs) -- it should not vary. If it ever prints
+            "no cross-domain conflict found in this scan" instead (only
+            possible after an unrelated dataset regeneration), that's the
+            code's own graceful fallback to three independent verdicts --
+            narrate generically rather than improvising, same as before.
 ```
 
 ## What to type, in order, during the recording

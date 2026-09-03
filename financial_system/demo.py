@@ -37,6 +37,7 @@ from financial_system.financial_graph.builder import build_graph
 from financial_system.financial_graph.queries import format_journey, payment_journey
 from financial_system.financial_state.builder import build_financial_state
 from financial_system.financial_state.store import FinancialStateStore
+from financial_system.orchestrator.orchestrator import process_payment
 from financial_system.policy.engine import evaluate
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.reconciliation.controller import run_controller_for_settlement
@@ -144,22 +145,49 @@ def screen_5_reevaluation(payment_id: str):
 
 def supporting_view(graph):
     _rule("SUPPORTING VIEW -- ONE SHARED FINANCIAL WORLD")
+    # Real cross-domain conflict, found fresh via the same detect_conflicts()
+    # logic Phase 8's batch run uses (financial_system/orchestrator) -- not a
+    # hardcoded payment ID, since IDs are uuid4()-based and not seed-stable
+    # across dataset regenerations. This is stronger evidence than three
+    # unrelated verdicts: it's two independently-correct agents disagreeing
+    # about the SAME real payment.
+    state = FinancialStateStore(STATE_DB)
+    payment_ids = [dict(r)["payment_id"] for r in state.all_rows("payments")]
+    conflict_case = next(
+        (c for c in (process_payment(graph, pid, investigate=False) for pid in payment_ids)
+         if c.conflicts),
+        None,
+    )
+
+    if conflict_case is not None:
+        print(f"Payment {conflict_case.subject} -- multiple agents, same real payment, real disagreement:\n")
+        if conflict_case.controller_verdict:
+            cv = conflict_case.controller_verdict
+            print(f"  CONTROLLER: {cv.decision}  ({cv.reason})")
+        if conflict_case.risk_verdict:
+            rk = conflict_case.risk_verdict
+            print(f"  RISK:       {rk.decision}  (score={rk.decision_score:.2f})  ({rk.reason})")
+        if conflict_case.recovery_verdict:
+            rv = conflict_case.recovery_verdict
+            print(f"  RECOVERY:   {rv.decision}  (score={rv.decision_score})  ({rv.reason})")
+        print("\n  CONFLICT DETECTED (not silently averaged away):")
+        for c in conflict_case.conflicts:
+            print(f"  - {c}")
+        return
+
+    # Fallback -- should not trigger against the committed dataset (25 real
+    # conflicts confirmed in Phase 8's batch run over the same raw data), but
+    # kept so an unrelated dataset regeneration degrades gracefully instead
+    # of crashing the demo.
+    print("(no cross-domain conflict found in this scan -- showing three independent verdicts instead)")
     with open(GT_PATH, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-
-    # A real REVIEW-tier Recovery case (different category, lower base rate).
     review_pid = next(r for r in rows if r["failure_reason"] == "insufficient_funds")["payment_id"]
     rv = run_recovery_for_payment(graph, review_pid, investigate=False)
     print(f"RECOVERY   {review_pid}: {rv.decision}  (score={rv.decision_score})")
-
-    # A real Controller case, first settlement in the graph -- whatever it is.
-    state = FinancialStateStore(STATE_DB)
     first_settlement = dict(next(iter(state.all_rows("settlements"))))["settlement_id"]
     cv = run_controller_for_settlement(graph, first_settlement, investigate=False)
     print(f"CONTROLLER {first_settlement}: {cv.decision}")
-
-    # A real Risk case -- first device with >=2 sharers, if any exist in this graph.
-    risk_shown = False
     for r in graph.all_edges():
         if r.relation != "uses":
             continue
@@ -167,10 +195,7 @@ def supporting_view(graph):
         if len(sharers) >= 2:
             rk = run_risk_for_device(graph, r.object_id, investigate=False)
             print(f"RISK       {r.object_id}: {rk.decision}  (score={rk.decision_score:.2f})")
-            risk_shown = True
             break
-    if not risk_shown:
-        print("RISK       (no multi-sharer device reached in this partial edge scan)")
 
 
 def run() -> None:
