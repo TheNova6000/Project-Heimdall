@@ -131,7 +131,7 @@ true, not what it happened to conclude a moment ago.
                        |
           +------------+------------+
           v            v            v
-       RISK       CONTROLLER     RECOVERY   <- this submission's focus
+        RISK       CONTROLLER     RECOVERY   <- this submission's focus
           |            |            |
           +------------+------------+
                        v
@@ -256,12 +256,12 @@ is a cached or hand-edited result.
 
 ## What's next
 
-`FUTURE_ARCHITECTURE.md` — the next architectural evolution (a shared
+`docs/FUTURE_ARCHITECTURE.md` — the next architectural evolution (a shared
 investigation substrate and compound cross-domain reasoning across Risk,
 Controller, and Recovery), deliberately not implemented for this
 submission, written before being asked rather than after.
 
-`FINANCIAL_INTELLIGENCE_RESEARCH_AND_GAP_REPORT.md` — a bounded audit of
+`docs/FINANCIAL_INTELLIGENCE_RESEARCH_AND_GAP_REPORT.md` — a bounded audit of
 this system against real external benchmarks and production payment
 platforms (Razorpay, Adyen, Elliptic, FinQA, Finance Agent Benchmark):
 what Heimdall already gets right (several hard-won engineering decisions
