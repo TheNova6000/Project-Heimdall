@@ -9,9 +9,12 @@ Stage 4 acceptance tests (five gates, this stage's own design turn):
 3. Re-entry -- the new observation must reach the orchestrator: rebuild the
    graph from the mutated state and confirm classify_event_types() no
    longer reports PAYMENT_FAILED for the recovered payment.
-4. Behavioral preservation -- inherited from Stage 3's own 0/160 result
-   (not re-run in full here; nothing in Stage 4 touches run_action_loop or
-   run_action_loop_v2's own logic, only adds a projector downstream of it).
+4. Behavioral preservation -- inherited from Stage 3's own result (10/160
+   known, deliberate divergences since R0/EV was wired into
+   run_action_loop_v2 -- see stage3_runner.py's EXPECTED_EV_DIVERGENCE;
+   not re-run in full here, since nothing in Stage 4 touches
+   run_action_loop or run_action_loop_v2's own logic, only adds a
+   projector downstream of it).
 5. No phantom facts -- neither "no ActionOutcomeObserved exists" nor "an
    ActionOutcomeObserved(FAILURE) exists" may produce a state transition.
 
@@ -178,8 +181,9 @@ if __name__ == "__main__":
     gate3 = run_gate3(success_pid) if gate2 else False
     gate5 = run_gate5(graph, events, actions, failure_pid)
     print("\n-- Gate 4: behavioral preservation -- inherited from Stage 3's own "
-          "0/160 result; nothing in Stage 4 modifies run_action_loop[_v2]'s logic, "
-          "only adds a projector strictly downstream of it.")
+          "result (10/160 known, deliberate R0/EV divergences); nothing in Stage 4 "
+          "modifies run_action_loop[_v2]'s logic, only adds a projector strictly "
+          "downstream of it.")
 
     passed = gate1 and gate2 and gate3 and gate5
     print(f"\nSTAGE 4: {'PASS' if passed else 'FAIL'}")

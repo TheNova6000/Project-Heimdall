@@ -4,7 +4,18 @@ idempotency gates from this stage's own design turn):
 
 1. Behavioral preservation: run_action_loop() (Phase 10, untouched) and
    run_action_loop_v2() (Stage 3, event-emitting) must produce IDENTICAL
-   case_status and attempt counts across all 160 failed payments.
+   case_status and attempt counts across all 160 failed payments --
+   EXCEPT the exact 10 payments where R0_RECOVERY_EV_NEGATIVE_BLOCK now
+   correctly fires (financial_system/policy/ev_rule_test.py's pinned set,
+   wired into the live loop's action/loop.py). v1 has no EV gate at all
+   and never will -- it stays intentionally EV-blind as the pre-R0
+   baseline this test measures against, not a second implementation to
+   keep in sync. Every one of those 10 divergences must go v2=BLOCK,
+   never the reverse (v2 becoming MORE permissive than v1 would be a
+   real regression); 4 of the 10 are cases where v1's blind retry would
+   have actually succeeded (RESOLVED) -- correctly blocked anyway,
+   because expected value is about whether the aggregate risk was worth
+   taking, not whether this one instance happened to work.
 2. Gate A -- same request twice -> exactly one logical execution.
 3. Gate B -- same key, different parameters -> rejected, no second execution.
 4. Gate C -- a simulated crash mid-execution is recovered from the event
@@ -43,6 +54,18 @@ def load_labels() -> list[dict]:
         return list(csv.DictReader(f))
 
 
+# The exact 10 real payments where R0 correctly diverges v2 from v1's
+# EV-blind baseline -- same pinned set as policy/ev_rule_test.py, restated
+# here rather than imported so a change to either file's expectation is
+# forced to be a deliberate, visible edit in both places, not a silent
+# drift.
+EXPECTED_EV_DIVERGENCE = {
+    "pay_c7141196c8", "pay_b9506fe143", "pay_e7a22834d1", "pay_142476e162",
+    "pay_5d73bf7b12", "pay_cde0c881c3", "pay_056db81f05", "pay_2fe06478ef",
+    "pay_ef36354524", "pay_ab3d75e707",
+}
+
+
 def run_behavioral_preservation(graph) -> bool:
     print("-- Behavioral preservation: run_action_loop vs. run_action_loop_v2 --")
     if EVENTS_DB.exists():
@@ -64,10 +87,22 @@ def run_behavioral_preservation(graph) -> bool:
         if i % 40 == 0 or i == len(labels):
             print(f"  [{i}/{len(labels)}]")
 
-    ok = not mismatches
-    print(f"Mismatches: {len(mismatches)}/{len(labels)}")
-    for m in mismatches[:5]:
+    mismatched_ids = {m[0] for m in mismatches}
+    unexpected = mismatched_ids - EXPECTED_EV_DIVERGENCE
+    missing = EXPECTED_EV_DIVERGENCE - mismatched_ids
+    wrong_direction = [m for m in mismatches if m[3] != "BLOCK"]  # m[3] is v2's case_status
+
+    ok = not unexpected and not missing and not wrong_direction
+    print(f"Mismatches: {len(mismatches)}/{len(labels)} (expected exactly {len(EXPECTED_EV_DIVERGENCE)}, "
+          f"all v2=BLOCK -- R0's known, deliberate divergence from the EV-blind v1 baseline)")
+    for m in mismatches:
         print(f"  {m}")
+    if unexpected:
+        print(f"UNEXPECTED divergence (not in the pinned EV set): {unexpected}")
+    if missing:
+        print(f"MISSING expected divergence (R0 should have fired but didn't): {missing}")
+    if wrong_direction:
+        print(f"WRONG DIRECTION (v2 more permissive than v1 -- a real regression): {wrong_direction}")
     print(f"Events recorded: {events.count()}")
     print("BEHAVIORAL PRESERVATION: PASS" if ok else "BEHAVIORAL PRESERVATION: FAIL")
     return ok

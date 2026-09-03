@@ -22,6 +22,7 @@ from financial_system.action.simulator import execute_action, verify_retry
 from financial_system.decisions.models import DecisionRecord
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.policy.engine import PolicyDecision, evaluate
+from financial_system.recovery.expected_value import compute_expected_value
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.recovery.signals import RECOVERY_LOGIC_VERSION
 from financial_system.policy.rules import POLICY_RULES_VERSION
@@ -169,7 +170,20 @@ def run_action_loop_v2(graph: GraphRepository, payment_id: str, events, actions,
         # historical replay at that cutoff reproduced DO_NOT_RETRY instead
         # of the RETRY that was actually decided.
         reasoning_time = datetime.now(timezone.utc)
-        policy_decision = evaluate(verdict, has_conflict=False)
+        # EV/R0 (Block 5/Phase 5-6): the same expected-value gate already
+        # proven against 144 real payments and demonstrated in the live demo
+        # is now part of the ACTUAL consequential path, not just an analytical
+        # branch alongside it. compute_expected_value() returns None for any
+        # verdict it has nothing to say about (not a RETRY-eligible recovery
+        # case) -- evaluate()'s R0 rule already only matches a recovery
+        # verdict proposing RETRY, so passing a None or inapplicable
+        # ev_result here is always safe and never changes behavior for a
+        # non-Recovery-RETRY verdict (e.g. the escalate verdict on a second
+        # attempt). as_of is intentionally NOT overridden here -- Block 5's
+        # own default (the payment's own created_at) is the correct decision
+        # moment, not "now".
+        ev_result = compute_expected_value(graph, payment_id)
+        policy_decision = evaluate(verdict, has_conflict=False, ev_result=ev_result)
         overall_attempt = attempt_number + 1
         idempotency_key = f"{payment_id}:attempt{overall_attempt}:{policy_decision.proposed_action}"
         executed, action_taken, log, verification_result, verification_detail = execute_action_with_events(
