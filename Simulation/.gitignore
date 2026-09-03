@@ -1,0 +1,11 @@
+# Generated simulation output is reproducible from a seed (Rules.md #6) --
+# don't commit full runs. A small, real sample run stays committed under
+# output/sample/ so the output shape is inspectable without re-running
+# anything (Architecture.md: "gitignored except a small committed sample").
+output/*
+!output/sample/
+!output/sample/**
+
+__pycache__/
+*.pyc
+.pytest_cache/

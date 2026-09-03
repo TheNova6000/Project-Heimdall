@@ -1,0 +1,16 @@
+merchant_id,name,bank_account_id,category,balance
+merchant_0001,Merchant 1,acct_000001,dining,896.35
+merchant_0002,Merchant 2,acct_000002,utilities,1099.06
+merchant_0003,Merchant 3,acct_000003,retail,1546.23
+merchant_0004,Merchant 4,acct_000004,retail,1145.14
+merchant_0005,Merchant 5,acct_000005,retail,2081.07
+merchant_0006,Merchant 6,acct_000006,groceries,1034.51
+merchant_0007,Merchant 7,acct_000007,groceries,2416.38
+merchant_0008,Merchant 8,acct_000008,retail,499.52
+merchant_0009,Merchant 9,acct_000009,groceries,3450.8
+merchant_0010,Merchant 10,acct_00000a,retail,665.71
+merchant_0011,Merchant 11,acct_00000b,transport,3575.06
+merchant_0012,Merchant 12,acct_00000c,groceries,601.1
+merchant_0013,Merchant 13,acct_00000d,groceries,686.8
+merchant_0014,Merchant 14,acct_00000e,groceries,3205.13
+merchant_0015,Merchant 15,acct_00000f,dining,773.21
