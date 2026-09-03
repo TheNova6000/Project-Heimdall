@@ -218,7 +218,7 @@ traceable consequence of the stated constants, which is exactly the
 auditability property this project is supposed to have — it is not a
 statistical accident.
 
-## Open questions for a future session
+## Open questions for a future session (as of end of Phase 1)
 
 - The specific transition point (~0.05–0.25 balance/income ratio) is an
   artifact of the current `PURCHASE_FRACTION_RANGE`/`BALANCE_FACTOR_*`
@@ -227,3 +227,352 @@ statistical accident.
   percentages as if they mean something beyond this Phase 1 build.
 - Nothing about Phase 2+ (institutional ledgers, retries, Heimdall
   bridge) has been started, per Rules.md #9 — intentionally.
+
+---
+
+# Phase 2 — Institutional depth
+
+## Status: built, run, and tested. Working.
+
+All five docs (PRD, Architecture, Rules, Phases, Design) plus this file
+were re-read before touching any code, then the actual Phase 1 code
+(`world/models.py`, `world/clock.py`, `world/engine.py`,
+`world/agents/*.py`, `run_simulation.py`, `stats/report.py`,
+`tests/test_engine.py`) was read in full before writing anything, per
+the standing instruction to match Phase 1's existing conventions rather
+than reinvent them.
+
+Scope, per Phases.md's Phase 2 line: "Real double-entry-style ledger for
+Bank (assets/liabilities, not just a balance number), an Account
+registry, basic settlement between Merchant and Bank." Nothing beyond
+that was built — no AML, no credit scoring, no refunds/chargebacks, no
+retries (all explicitly Phase 3+/4 territory), no touching
+`financial_system/`, no LLM, no external dataset.
+
+## What changed
+
+```
+world/models.py       LedgerEntry: now has entry_type (debit/credit),
+                       unsigned amount, and transaction_id (was: one
+                       signed amount, no linkage). Account/Transaction/
+                       Event structurally unchanged (Account gains new
+                       owner_type values; Transaction gains one new kind
+                       value, "settlement" -- no field changes).
+world/agents/bank.py   Rewritten. Bank.credit()/debit() (single-entry)
+                       are GONE, replaced by Bank.fund_external() and
+                       the module-level post_transfer() function, both
+                       of which always post a balanced debit+credit
+                       pair. New Bank.open_reserve_account() creates one
+                       asset-side "bank_reserve" account per Bank.
+world/agents/merchant.py  Merchant gains `pending_account_id` -- a
+                       second bank account holding proceeds received
+                       but not yet settled.
+world/engine.py        _build_world creates a reserve account per Bank
+                       and a pending account per Merchant. _maybe_pay_
+                       income/_maybe_attempt_purchase now call
+                       fund_external/post_transfer instead of credit/
+                       debit. New _run_settlement() sweeps pending ->
+                       settled once per day, before that day's Person
+                       loop. _record() now takes a caller-supplied
+                       transaction_id (needed so ledger entries can be
+                       linked to it) instead of generating one itself.
+run_simulation.py      Writes a new ledger_entries.csv (every
+                       LedgerEntry, flattened across every account,
+                       sorted by entry_id for determinism). merchants.csv
+                       gains pending_account_id/pending_balance columns.
+tests/test_engine.py   One test (test_transaction_fields_well_formed)
+                       extended with a `settlement` branch; one test
+                       (the byte-identical-CSV determinism test) extended
+                       to also diff ledger_entries.csv. Nothing else
+                       touched -- all 9 original tests still pass
+                       unmodified in behavior.
+tests/test_ledger.py   NEW. 15 tests, all Phase 2-specific (see Testing
+                       below).
+docs/Phases.md         Phase 2's status line updated NOT STARTED -> DONE
+                       with a one-paragraph summary, in the existing
+                       style.
+docs/Memory.md         This section.
+```
+
+`docs/PRD.md`, `docs/Architecture.md`, and `docs/Rules.md` were NOT
+modified — no factual inconsistency was found in them during this work.
+
+## Key design decisions and why
+
+- **A `bank_reserve` asset account per Bank, not a signed/negative-
+  capable interbank clearing account.** Real double-entry bookkeeping
+  needs an asset side to balance liability-side inflows (salary):
+  crediting a Person's deposit liability without a matching debit
+  somewhere would just be Phase 1's single-entry ledger again. The
+  reserve account is that debit target. It is *only ever debited
+  (increased)* by `fund_external()` — nothing in Phase 2's scope draws
+  it down (no cash withdrawal, no bank failure modeled) — so it is
+  monotonically non-decreasing and can never go negative by
+  construction, not by a special-cased exemption from the "no negative
+  balances" rule. This was a deliberate choice over the alternative
+  (a per-bank interbank *clearing* account that could carry a negative
+  net position under real correspondent-banking semantics), specifically
+  because that alternative would conflict with this task's explicit "no
+  negative balances anywhere, including inside the new ledger" bar. See
+  `world/agents/bank.py`'s module docstring for the full reasoning.
+
+- **Cross-bank transfers are posted as one direct balanced pair, not
+  routed through any interbank settlement mechanism.** A Person's bank
+  and a Merchant's bank are chosen independently at world-generation
+  time (unchanged from Phase 1), so most purchases move money between
+  two different `Bank` agents. Modeling real interbank settlement
+  (nostro/vostro accounts, net settlement batches, correspondent
+  banking) honestly would need exactly the negative-capable clearing
+  account ruled out above. Instead, `post_transfer()` (a module-level
+  function, not a `Bank` method, specifically so it can post into two
+  different banks' account dicts) debits the source and credits the
+  destination directly, as if every `Bank` agent shared one clearing
+  ledger. **This is a named simplification, not a hidden one** — the
+  global double-entry invariant ("debits == credits across the whole
+  ledger") holds exactly because of this choice, but it means Phase 2's
+  "Bank" agents don't yet have fully independent, individually-
+  reconcilable balance sheets against each other; only the whole
+  simulated banking system's ledger is guaranteed to balance. A real
+  interbank layer is a reasonable Phase 3+/5 candidate, not attempted
+  here.
+
+- **Opening balances stay outside the ledger's scope, exactly as in
+  Phase 1.** A Person's opening balance is still seeded directly onto
+  `Account.balance` with zero matching ledger entries — unchanged
+  behavior from Phase 1's `Bank.open_account()`. This was a deliberate
+  choice against inventing a synthetic "bootstrap funding" transaction
+  (which would have been easy to add: Debit reserve / Credit account,
+  same as salary) because Phase 1 never had one, this task didn't ask
+  for one, and world-generation initial conditions are conceptually
+  different from a simulated transaction. Net effect: the double-entry
+  invariant is proven over the *ledger* (i.e., over modeled economic
+  events from day 0 onward), not over total system balances including
+  initial seeding — stated explicitly here and in code so nobody
+  mistakes the invariant for "total money in = total money out from
+  absolute zero."
+
+- **`LedgerEntry.amount` changed from signed to unsigned, with a new
+  `entry_type` field.** Phase 1 stored `+amount` for credit, `-amount`
+  for debit, on a per-account single-entry basis. Phase 2 needed
+  entries to be explicitly typed and pairable (for the invariant check
+  and for the `transaction_id` linkage) — unsigned amount + explicit
+  `entry_type` is the standard double-entry convention and avoids sign-
+  convention ambiguity between the two different balance-sheet sides
+  (asset vs. liability) that now coexist in one ledger. This is a
+  breaking schema change to `LedgerEntry` (not to `Transaction`/`Event`,
+  which are structurally unchanged apart from one new `kind` value), but
+  nothing outside `world/agents/bank.py` and `world/engine.py` read
+  `LedgerEntry.amount`'s sign in Phase 1, so the blast radius was
+  checked (grep) and confirmed contained.
+
+- **Settlement is a full daily sweep, at a fixed time, drawing no RNG.**
+  Every day, before that day's Person loop runs, every Merchant's entire
+  pending balance (if any) moves to their settled account in one
+  operation. Because purchases can only add to a pending account *after*
+  the sweep that day already ran, whatever a sweep finds is exactly
+  yesterday's (and only yesterday's) proceeds — this makes "full sweep,
+  once a day, first thing" mechanically equivalent to "T+1", without
+  needing to track per-day sub-balances explicitly. The sweep's
+  timestamp is fixed (03:00 UTC) rather than RNG-sampled like per-person
+  event timestamps are, because settlement is modeled as a systemic
+  batch process, not an individual agent's probabilistic decision — this
+  also means adding settlement did not perturb the RNG draw sequence
+  that determines purchase/salary outcomes, keeping Phase 2's numerical
+  differences from a hypothetical unmodified Phase 1 run limited to "new
+  settlement rows exist," not "unrelated purchase outcomes silently
+  shifted because of new RNG consumption."
+
+- **T+1, not same-day, chosen for the settlement delay (provenance:
+  MODELING ASSUMPTION).** Stated inline in `world/engine.py`'s
+  `_run_settlement` docstring. Not calibrated to any specific real card
+  network or processor — chosen because (a) it needed to be non-zero for
+  "received" and "settled" to be genuinely distinct states, which is the
+  entire point of this Phase 2 feature per the task brief ("rather than
+  money just appearing usable instantly"), and (b) T+1 is a simple,
+  auditable rule matching the general shape of real card-payment
+  settlement cycles (commonly 1-2 business days) without claiming that
+  specific precision. A same-day (same-tick) rule was considered and
+  rejected specifically because it wouldn't produce any observable
+  received-vs-settled distinction in the output at all.
+
+- **The last simulated day's purchase proceeds are never settled.**
+  Because the sweep runs at the *start* of each day, there is no "day
+  `num_days`" tick to sweep the final day's proceeds on. Left this way
+  deliberately rather than adding an end-of-run "settle everything"
+  step: a real business genuinely always has some in-flight
+  receivables, so an always-nonzero final pending balance is realistic,
+  not a leak — and adding a special end-of-run sweep would have been an
+  inconsistent, same-day exception to the T+1 rule applied everywhere
+  else. `tests/test_ledger.py::test_final_day_purchases_remain_
+  unsettled_at_run_end` proves this is real, current behavior (not
+  merely a claim), specifically so a future accidental "fix" that added
+  an end-of-run sweep would be caught by a failing test, not silently
+  ship as an undocumented behavior change.
+
+- **`settlement` added as a new `Transaction.kind` value, `pending:<id>`
+  added as a new synthetic `from_id` prefix.** Mirrors Phase 1's already-
+  established `employer:<id>` convention exactly (a synthetic,
+  unmodeled counterparty id for a money movement that doesn't have a
+  real modeled agent on one side) rather than inventing a different
+  pattern. This is the one place Phase 2 extends the `kind` taxonomy;
+  Rules.md #9 ("don't build Phase 2+ material without it being
+  explicitly requested") does not apply here since Phase 2 itself is
+  explicitly what's being built, and "basic settlement between Merchant
+  and Bank" is its literal, stated scope.
+
+- **`_record()` now takes a caller-generated `transaction_id`, rather
+  than generating one internally.** Needed because `LedgerEntry.
+  transaction_id` has to reference the same id the `Transaction` row
+  will end up with, and the ledger posting (`fund_external`/
+  `post_transfer`) happens before `_record()` is called (so the
+  Transaction/Event can correctly reflect whether the transfer
+  succeeded). Callers now do `txn_id = self.ids.next_txn_id()` up front
+  and pass it through both calls.
+
+## Provenance of every new rule (Rules.md #2)
+
+| Rule | Value | Provenance |
+|---|---|---|
+| Settlement delay | Exactly 1 simulated day (T+1), full daily sweep | Modeling assumption — named stand-in for real card-network settlement cycles (commonly ~1-2 business days), not calibrated to any specific processor; chosen non-zero specifically so "received" and "settled" are observably distinct states, which is this feature's whole purpose |
+| Settlement batch time | Fixed 03:00 UTC, not RNG-sampled | Modeling assumption — settlement is a systemic batch process, not an individual agent's probabilistic decision, so it is modeled as deterministic and RNG-free, unlike per-person event timestamps |
+| Cross-bank transfer mechanics | Direct balanced pair, no interbank clearing account modeled | Modeling assumption / explicit scope simplification — real interbank settlement (nostro/vostro, net settlement batches) is not attempted; stated plainly as a scope boundary, not hidden |
+| Opening balance funding | No matching ledger entries (unchanged from Phase 1) | Modeling assumption — world-generation initial condition, not a simulated transaction; the double-entry invariant is proven over the ledger (modeled events), not over total system balances from absolute zero |
+| Bank reserve account | One per Bank, asset-side, monotonically non-decreasing | Modeling assumption — the double-entry counterpart for external (salary) inflows; never drawn down because no cash withdrawal is modeled in Phase 2's scope |
+
+## Testing — what's actually verified, not just claimed
+
+`tests/test_ledger.py`, 15 new tests, all passing (24 total across both
+test files as of this session):
+
+- **Global double-entry invariant**: sum of every debit-entry amount
+  across every account in every bank equals the sum of every credit-
+  entry amount, exactly, at the end of a run
+  (`test_double_entry_invariant_holds_globally`).
+- **Per-transaction double-entry invariant** (stronger than the global
+  check — rules out an aggregate check hiding an offsetting pair of
+  unrelated imbalances): for every individual `transaction_id`, its own
+  debit and credit entries balance, and there are exactly two entries
+  per ledger-backed transaction, never more or fewer
+  (`test_double_entry_invariant_holds_per_transaction`).
+- **Traceability**: every `LedgerEntry.transaction_id` resolves to a
+  real `Transaction`; every `payment_failure` transaction corresponds to
+  *zero* ledger entries anywhere (no partial/phantom postings on a
+  failed payment).
+- **No negative balances anywhere in the new ledger**, extended to cover
+  Phase 2's two new account types (`bank_reserve`, `merchant_pending`),
+  checked at every single ledger entry, not just final state
+  (`test_no_negative_balance_across_all_account_types`) — and the test
+  explicitly asserts all four account types were actually exercised, so
+  the check isn't vacuous for the new ones.
+- **Reserve account correctness**: monotonically non-decreasing across
+  its own ledger (proving *why* it can't go negative, not just that it
+  didn't); its final balance reconciles exactly against the sum of all
+  salary amounts paid, computed independently from `Transaction` rows
+  (`test_reserve_account_balance_equals_total_salary_paid`) — a real
+  cross-check between two independently-derived numbers, not a
+  tautology.
+- **Settlement mechanics**: purchase proceeds are proven (via a
+  minimal, fully hand-traceable 1-person/1-bank/1-merchant scenario) to
+  land in the merchant's PENDING account and NOT their settled account
+  on the same day; settlement for a given merchant always lands on
+  `purchase_day + 1` exactly, not merely "eventually"
+  (`test_settlement_is_exactly_next_day`); the final simulated day's
+  proceeds are proven to remain deliberately unsettled at run end.
+- **Conservation**: for every merchant, settled balance + pending
+  balance at run end equals the total of every successful purchase
+  amount they ever received — nothing lost, nothing duplicated
+  (`test_merchant_settled_plus_pending_equals_total_purchase_proceeds`).
+- **Determinism** extended to the new ledger: same seed → identical
+  in-memory `LedgerEntry` sequences across two separate runs; different
+  seeds → different ledger output (sanity that settlement/ledger logic
+  actually depends on the RNG-driven purchase/salary stream, not
+  silently constant).
+
+`tests/test_engine.py`'s original 9 tests all still pass, with two
+minimal, additive edits (not behavior changes to old cases):
+`test_transaction_fields_well_formed` gained a `settlement`/`pending:`
+branch alongside the unchanged `salary`/other branches, and the byte-
+identical-CSV determinism test now also diffs `ledger_entries.csv`.
+
+**Manual, end-to-end verification** (per this task's brief, not just
+pytest): ran `python run_simulation.py --seed 42 --population 200 --days
+60 --outdir output/phase2_check` once, and a second time into
+`output/phase2_check_b`; `diff -rq` between the two directories reported
+zero differences across all 7 output files (persons/banks/merchants/
+accounts/transactions/events/ledger_entries.csv) — full CLI-level
+determinism, not just the in-memory/pytest-level check. Also manually
+verified on that run's output: 0 negative balances across 233 accounts
+and 10,748 ledger entries; global debit total exactly equals global
+credit total (4,586,873.56 = 4,586,873.56); 878 settlement transactions
+and 878 matching `settlement_completed` events; every merchant's
+settled+pending balance reconciles exactly against their total purchase
+proceeds (0 mismatches across 15 merchants). Both throwaway output
+directories were deleted after (`output/sample/` — Phase 1's committed
+sample — was left untouched; regenerating it to reflect Phase 2's new
+CSV columns/file was judged out of this task's explicit scope and left
+for a reviewer to decide on).
+
+Also ran `stats/report.py` against the phase2_check output before
+deleting it — it works unmodified against Phase 2 output, since its
+`by_kind` grouping is a generic dict keyed by whatever `kind` values
+appear; `settlement` rows show up correctly in the Volume section
+without any code change needed there.
+
+## What's genuinely done vs. still rough
+
+**Done and solid**: the double-entry invariant (proven globally and
+per-transaction), no-negative-balance across all four account types,
+the settlement received→pending→settled state machine and its exact
+T+1 timing, full conservation of merchant proceeds, determinism
+extended through the new ledger and settlement logic, CLI-level
+byte-identical-output verification, 24/24 tests passing.
+
+**Rough / minimal by design (Phase 2 scope, not bugs — named plainly,
+per Rules.md #5)**:
+- **No real interbank settlement mechanics.** Cross-bank transfers are
+  posted as a single direct balanced pair, as if all `Bank` agents
+  shared one clearing ledger, rather than modeling nostro/vostro
+  accounts or net settlement batches between banks. The global
+  double-entry invariant holds; a *per-bank* independent balance sheet
+  reconciliation does not yet, and wasn't attempted. See "Key design
+  decisions" above.
+- **Opening balances are still outside the ledger** (zero matching
+  entries), exactly as in Phase 1 — an intentional, stated scope
+  boundary, not something Phase 2 was asked to fix.
+- **Settlement is a single, uniform, always-applied rule** — every
+  merchant, every day, same fixed T+1 delay. No per-merchant variation,
+  no minimum settlement amount, no batching/fees, no settlement
+  failures (a settlement transfer can never itself fail, since it only
+  ever moves exactly a pending account's own current balance, which by
+  definition it can always cover). Real payment processors vary
+  settlement timing by merchant risk tier, payment method, and country
+  — none of that is modeled, and wasn't asked for.
+- **The `balance_before` field on a settlement `Transaction` is close
+  to tautological** — because settlement always sweeps the *entire*
+  pending balance, `balance_before` (the pending account's balance right
+  before the sweep) always exactly equals `amount` (the amount swept).
+  Kept anyway for schema consistency with every other `Transaction`
+  kind and because it's still directly meaningful (it's not computed
+  FROM `amount`, it's independently read from account state before the
+  transfer) — same honesty standard Phase 1 already applied to
+  `payment_failure`'s analogous near-tautological check.
+- **No AML, credit scoring, refunds/chargebacks, retries** — untouched,
+  exactly as instructed; those remain Phase 3+/4 territory.
+- **`output/sample/` (the committed Phase 1 example run) was not
+  regenerated** to reflect Phase 2's new `ledger_entries.csv` file and
+  `merchants.csv` columns — this wasn't explicitly requested, and
+  updating a previously-reviewed committed artifact felt like a
+  decision for a reviewer, not something to do unasked. It currently
+  reflects Phase 1's schema only; a future session should regenerate it
+  if Phase 2's output shape should be the new reference sample.
+
+## Open questions for a future session
+
+- Whether a real interbank settlement layer (the "Rough" item above) is
+  worth building is an open question for whenever multi-bank realism
+  actually matters to a downstream use of this project — not assumed to
+  be needed.
+- Whether `output/sample/` should be regenerated against Phase 2's
+  output shape is an open, deliberately-left decision (see above).
+- Nothing about Phase 3+ (behavioral realism, domain events, scale,
+  Heimdall bridge) has been started, per Rules.md #9 — intentionally.

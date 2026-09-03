@@ -56,9 +56,16 @@ def write_output(result: SimulationResult, outdir: str) -> None:
     _write_csv(os.path.join(outdir, "banks.csv"), bank_rows, ["bank_id", "name"])
 
     merchant_account_balance = {}
+    merchant_pending_balance = {}
     for account in result.accounts:
         if account.owner_type == "merchant":
             merchant_account_balance[account.owner_id] = account.balance
+        elif account.owner_type == "merchant_pending":
+            # Phase 2: funds received but not yet settled (see
+            # world/engine.py's _run_settlement) -- surfaced as its own
+            # column so "received vs. settled" is visible directly in
+            # merchants.csv, not just derivable from accounts.csv.
+            merchant_pending_balance[account.owner_id] = account.balance
     merchant_rows = []
     for m in result.merchants:
         merchant_rows.append(
@@ -68,12 +75,22 @@ def write_output(result: SimulationResult, outdir: str) -> None:
                 "bank_account_id": m.bank_account_id,
                 "category": m.category,
                 "balance": merchant_account_balance.get(m.merchant_id, 0.0),
+                "pending_account_id": m.pending_account_id,
+                "pending_balance": merchant_pending_balance.get(m.merchant_id, 0.0),
             }
         )
     _write_csv(
         os.path.join(outdir, "merchants.csv"),
         merchant_rows,
-        ["merchant_id", "name", "bank_account_id", "category", "balance"],
+        [
+            "merchant_id",
+            "name",
+            "bank_account_id",
+            "category",
+            "balance",
+            "pending_account_id",
+            "pending_balance",
+        ],
     )
 
     account_rows = [
@@ -90,6 +107,33 @@ def write_output(result: SimulationResult, outdir: str) -> None:
         os.path.join(outdir, "accounts.csv"),
         account_rows,
         ["account_id", "bank_id", "owner_id", "owner_type", "balance"],
+    )
+
+    # Phase 2: the double-entry ledger itself, flattened across every
+    # account in every bank -- one row per LedgerEntry, sorted by
+    # entry_id. entry_id is a monotonic counter (world/engine.py's
+    # _IdCounters), so sorting by it recovers the exact global posting
+    # order deterministically, the same way transaction_id/event_id
+    # already do for their own CSVs.
+    ledger_rows = [
+        dataclasses.asdict(entry)
+        for account in sorted(result.accounts, key=lambda a: a.account_id)
+        for entry in account.ledger
+    ]
+    ledger_rows.sort(key=lambda r: r["entry_id"])
+    _write_csv(
+        os.path.join(outdir, "ledger_entries.csv"),
+        ledger_rows,
+        [
+            "entry_id",
+            "account_id",
+            "timestamp",
+            "entry_type",
+            "amount",
+            "balance_after",
+            "description",
+            "transaction_id",
+        ],
     )
 
     txn_rows = [dataclasses.asdict(t) for t in result.transactions]

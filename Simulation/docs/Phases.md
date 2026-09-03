@@ -22,11 +22,27 @@ no negative balances, well-formed output), and there's an honest
 written report of what the output actually looks like — including if
 it turns out to be no more useful than expected.
 
-## Phase 2 — Institutional depth (NOT STARTED)
+## Phase 2 — Institutional depth (DONE)
 
-Real double-entry-style ledger for Bank (assets/liabilities, not just
-a balance number), an Account registry, basic settlement between
-Merchant and Bank. Only begins after Phase 1 is done and reviewed.
+Built: a real double-entry ledger for Bank (`LedgerEntry.entry_type`
+debit/credit, unsigned magnitude, `transaction_id`-linked pairs;
+`world/agents/bank.py`'s `fund_external`/`post_transfer` post every
+economic movement as a balanced pair against the right side of the
+balance sheet -- a new `bank_reserve` asset account per Bank represents
+external inflows, customer/merchant accounts are liabilities); the
+existing per-Bank Account registry, extended with a second
+`merchant_pending` account per Merchant; and basic settlement (purchase
+proceeds land in a Merchant's pending account, then move to their
+settled/spendable account on a fixed T+1 sweep, `world/engine.py`'s
+`_run_settlement`). Global double-entry invariant (debits == credits
+across the whole ledger, always) and no-negative-balance are both
+tested, including for the two new account types. 24 tests passing (9
+original Phase 1 + 15 new, `tests/test_ledger.py`). See
+`Simulation/docs/Memory.md`'s "Phase 2" section for full detail,
+provenance of the new settlement-timing rule, and honest caveats
+(notably: cross-bank transfers don't model real interbank settlement
+mechanics, and opening balances remain outside the ledger's scope,
+exactly as in Phase 1).
 
 ## Phase 3 — Behavioral realism (NOT STARTED)
 

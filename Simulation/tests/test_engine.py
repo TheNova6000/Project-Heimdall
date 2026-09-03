@@ -100,6 +100,7 @@ def test_same_seed_produces_byte_identical_csv_output():
             "accounts.csv",
             "transactions.csv",
             "events.csv",
+            "ledger_entries.csv",  # Phase 2
         ):
             path_a = os.path.join(outdir_a, filename)
             path_b = os.path.join(outdir_b, filename)
@@ -176,15 +177,24 @@ def test_transaction_fields_well_formed():
 
     assert result.transactions, "expected a non-trivial number of transactions"
 
+    # Phase 2 adds one new kind, "settlement" (Phases.md Phase 2: "basic
+    # settlement between Merchant and Bank" -- see world/engine.py's
+    # _run_settlement). This extends the taxonomy check below with a new
+    # branch; the salary/purchase/payment_failure branches are otherwise
+    # unchanged from Phase 1.
     for t in result.transactions:
         assert t.amount > 0, f"{t.transaction_id} has non-positive amount {t.amount}"
-        assert t.kind in {"salary", "purchase", "payment_failure"}
+        assert t.kind in {"salary", "purchase", "payment_failure", "settlement"}
         assert t.day >= 0
         # every to_id/from_id must resolve to a known agent (person,
-        # merchant, or the synthetic employer source for salary rows)
+        # merchant, or a synthetic source: "employer:<id>" for salary,
+        # "pending:<id>" for settlement -- see world/engine.py)
         if t.kind == "salary":
             assert t.from_id.startswith("employer:")
             assert t.to_id in person_ids
+        elif t.kind == "settlement":
+            assert t.from_id.startswith("pending:")
+            assert t.to_id in merchant_ids
         else:
             assert t.from_id in person_ids
             assert t.to_id in merchant_ids
