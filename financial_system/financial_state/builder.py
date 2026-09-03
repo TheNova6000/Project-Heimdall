@@ -60,14 +60,14 @@ class Phase1Result:
     checksum_failures: list[str]
 
 
-def _raw_row_count(source_file: str) -> int:
-    with open(RAW_DIR / source_file, newline="", encoding="utf-8") as f:
+def _raw_row_count(raw_dir: Path, source_file: str) -> int:
+    with open(raw_dir / source_file, newline="", encoding="utf-8") as f:
         return sum(1 for _ in csv.DictReader(f))
 
 
-def _raw_money_checksum(source_file: str, column: str) -> Decimal:
+def _raw_money_checksum(raw_dir: Path, source_file: str, column: str) -> Decimal:
     total = Decimal("0")
-    with open(RAW_DIR / source_file, newline="", encoding="utf-8") as f:
+    with open(raw_dir / source_file, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             if row.get(column):
                 total += Decimal(row[column])
@@ -89,7 +89,7 @@ def build_financial_state(db_path: Path = DB_PATH, raw_dir: Path = RAW_DIR) -> t
     row_count_failures = []
     for source_file, table, _ in _INGESTION_STEPS:
         report = next(r for r in reports if r.source_file == source_file)
-        raw_count = _raw_row_count(source_file)
+        raw_count = _raw_row_count(raw_dir, source_file)
         if report.rows_read != raw_count:
             row_count_failures.append(
                 f"{source_file}: read {report.rows_read} rows but CSV has {raw_count}")
@@ -103,7 +103,7 @@ def build_financial_state(db_path: Path = DB_PATH, raw_dir: Path = RAW_DIR) -> t
 
     checksum_failures = []
     for source_file, csv_col, table, table_col in _MONEY_CHECKS:
-        expected = _raw_money_checksum(source_file, csv_col)
+        expected = _raw_money_checksum(raw_dir, source_file, csv_col)
         actual = store.sum_decimal(table, table_col)
         if expected != actual:
             checksum_failures.append(f"{table}.{table_col}: raw sum {expected} != stored sum {actual}")
@@ -117,7 +117,7 @@ def build_financial_state(db_path: Path = DB_PATH, raw_dir: Path = RAW_DIR) -> t
     return store, result
 
 
-def _print_report(store: FinancialStateStore, result: Phase1Result):
+def _print_report(store: FinancialStateStore, result: Phase1Result, raw_dir: Path = RAW_DIR):
     print(f"{'file':<28}{'read':>7}{'normalized':>13}{'rejected':>10}")
     for r in result.reports:
         print(f"{r.source_file:<28}{r.rows_read:>7}{r.normalized:>13}{r.rejected:>10}")
@@ -125,7 +125,7 @@ def _print_report(store: FinancialStateStore, result: Phase1Result):
     print()
     print("-- money checksums (raw CSV sum vs. stored sum, exact Decimal) --")
     for source_file, csv_col, table, table_col in _MONEY_CHECKS:
-        expected = _raw_money_checksum(source_file, csv_col)
+        expected = _raw_money_checksum(raw_dir, source_file, csv_col)
         actual = store.sum_decimal(table, table_col)
         status = "OK" if expected == actual else "MISMATCH"
         print(f"  {table}.{table_col:<14} raw={expected:<14} stored={actual:<14} [{status}]")
@@ -155,5 +155,5 @@ def _print_report(store: FinancialStateStore, result: Phase1Result):
 
 if __name__ == "__main__":
     store, result = build_financial_state()
-    _print_report(store, result)
+    _print_report(store, result, RAW_DIR)
     sys.exit(0 if result.passed else 1)
