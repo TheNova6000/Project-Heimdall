@@ -1,0 +1,44 @@
+[
+  {
+    "case": "fraud_ring_example",
+    "payment_id": "pay_f63eecc054"
+  },
+  {
+    "case": "benign_shared_device_example",
+    "payment_id": "pay_f0a73ba9ef"
+  },
+  {
+    "case": "recoverable_failure_example",
+    "payment_id": "pay_f63eecc054",
+    "failure_reason": "insufficient_funds",
+    "is_recoverable": true,
+    "retry_would_succeed": true,
+    "recommended_action": "RETRY_LATER"
+  },
+  {
+    "case": "unrecoverable_failure_example",
+    "payment_id": "pay_5738800427",
+    "failure_reason": "risk_block",
+    "is_recoverable": false,
+    "retry_would_succeed": false,
+    "recommended_action": "MANUAL_REVIEW"
+  },
+  {
+    "case": "explainable_exception_example",
+    "settlement_id": "sett_0c20f81711",
+    "payment_ids": "pay_118a851c25;pay_83dfd8ca44",
+    "root_cause": "fee_discrepancy",
+    "expected_net": 10528.28,
+    "actual_bank_amount": 10491.71,
+    "is_explainable": true
+  },
+  {
+    "case": "honest_unexplained_exception_example",
+    "settlement_id": "sett_5ebacb3627",
+    "payment_ids": "pay_8270cf5f8f",
+    "root_cause": "bank_adjustment",
+    "expected_net": 651.33,
+    "actual_bank_amount": 194.41,
+    "is_explainable": false
+  }
+]

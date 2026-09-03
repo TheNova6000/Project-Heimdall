@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Discovery.Ai — construct a model of anything</title>
+<meta name="description" content="Ask a question. Watch the system recursively investigate it and build a live graph of what it explored — not a finished answer, a trace of real reasoning." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000000;
+    --panel: #000000;
+    --border: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.35);
+    --text: #ffffff;
+    --muted: rgba(255, 255, 255, 0.55);
+    --muted-2: rgba(255, 255, 255, 0.35);
+    --font-mono: "JetBrains Mono", ui-monospace, Menlo, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  html, body { margin: 0; }
+  ::selection { background: #fff; color: #000; }
+  body {
+    font-family: var(--font-mono);
+    background: var(--bg);
+    color: var(--text);
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* ---------- ambient background: monochrome drifting glow + fine grid ---------- */
+  .bg-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .bg-layer::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 20%, black 40%, transparent 100%);
+  }
+  .bg-network { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .blob { position: absolute; border-radius: 50%; filter: blur(100px); background: #fff; will-change: transform; }
+  .blob.b1 { width: 520px; height: 520px; top: -200px; left: -140px; opacity: 0.06; animation: drift1 26s ease-in-out infinite; }
+  .blob.b2 { width: 460px; height: 460px; bottom: -220px; right: -120px; opacity: 0.05; animation: drift2 32s ease-in-out infinite; }
+  .blob.b3 { width: 320px; height: 320px; top: 40%; left: 45%; opacity: 0.035; animation: drift3 38s ease-in-out infinite; }
+  @keyframes drift1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(80px, 60px); } }
+  @keyframes drift2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-70px, -50px); } }
+  @keyframes drift3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-40px, 30px) scale(1.15); } }
+
+  /* ---------- HUD corner-bracket motif (monochrome) ---------- */
+  .corner { position: absolute; width: 16px; height: 16px; pointer-events: none; }
+  .corner.tl { top: 0; left: 0; border-top: 2px solid var(--border-strong); border-left: 2px solid var(--border-strong); }
+  .corner.tr { top: 0; right: 0; border-top: 2px solid var(--border-strong); border-right: 2px solid var(--border-strong); }
+  .corner.bl { bottom: 0; left: 0; border-bottom: 2px solid var(--border-strong); border-left: 2px solid var(--border-strong); }
+  .corner.br { bottom: 0; right: 0; border-bottom: 2px solid var(--border-strong); border-right: 2px solid var(--border-strong); }
+  .page-corner { position: fixed; width: 34px; height: 34px; pointer-events: none; z-index: 40; opacity: 0.3; }
+  .page-corner.tl { top: 0; left: 0; border-top: 2px solid #fff; border-left: 2px solid #fff; }
+  .page-corner.tr { top: 0; right: 0; border-top: 2px solid #fff; border-right: 2px solid #fff; }
+  .page-corner.bl { bottom: 0; left: 0; border-bottom: 2px solid #fff; border-left: 2px solid #fff; }
+  .page-corner.br { bottom: 0; right: 0; border-bottom: 2px solid #fff; border-right: 2px solid #fff; }
+
+  /* ---------- hairline section-label divider (// LABEL —) ---------- */
+  .section-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    opacity: 0.85;
+  }
+  .section-label .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--border-strong), transparent); }
+  .section-label.center { justify-content: center; }
+  .section-label.center .line { max-width: 70px; }
+  .section-label.center .line.left { background: linear-gradient(270deg, var(--border-strong), transparent); }
+
+  header, main, footer { position: relative; z-index: 1; }
+
+  /* ---------- nav ---------- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(10px);
+  }
+  header h1 {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    margin: 0;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    display: inline-block;
+    color: #fff;
+  }
+  header a.logo-link { text-decoration: none; }
+  nav.main-nav { display: flex; gap: 26px; margin-left: 8px; }
+  nav.main-nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    transition: color 0.15s ease;
+  }
+  nav.main-nav a:hover { color: #fff; }
+  .nav-cta {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    color: #000;
+    text-decoration: none;
+    padding: 9px 18px;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid #fff;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .nav-cta:hover { background: #000; color: #fff; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    position: relative;
+    min-height: calc(100vh - 65px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hero .eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 26px; opacity: 0.7; }
+  .hero .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px #fff; animation: pulse-idle 2.4s ease-in-out infinite; }
+  .hero .eyebrow span { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  @keyframes pulse-idle { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+  .hero h2 {
+    font-size: clamp(34px, 6vw, 68px);
+    line-height: 1.08;
+    margin: 0 0 22px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    max-width: 900px;
+  }
+  .hero h2 em { font-style: italic; }
+  .hero p.lede {
+    max-width: 560px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.7;
+    margin: 0 0 36px;
+  }
+  .hero .cta-row { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .btn-primary, .btn-secondary {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 26px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .btn-primary { background: #fff; color: #000; border: 1px solid #fff; }
+  .btn-primary:hover { background: #000; color: #fff; }
+  .btn-secondary { background: transparent; color: var(--muted); border: 1px solid var(--border-strong); }
+  .btn-secondary:hover { color: #fff; border-color: #fff; }
+  .hero .scroll-hint {
+    position: absolute;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    animation: bob 2s ease-in-out infinite;
+  }
+  @keyframes bob { 0%,100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, 6px); } }
+
+  /* ---------- shared section chrome ---------- */
+  section.block { position: relative; padding: 90px 28px; border-bottom: 1px solid var(--border); }
+  section.block .inner { max-width: 1080px; margin: 0 auto; }
+  section.block h3.title { font-size: clamp(24px, 3.4vw, 36px); letter-spacing: 0.02em; margin: 18px 0 20px; font-weight: 700; }
+  section.block .center-title { text-align: center; margin-bottom: 56px; }
+
+  /* ---------- about ---------- */
+  #about .about-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: start; }
+  #about .about-grid > div { min-width: 0; }
+  #about p { color: var(--muted); font-size: 14px; line-height: 1.8; margin: 0 0 18px; }
+  #about .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 32px; }
+  #about .stat { border-left: 1px solid var(--border-strong); padding-left: 16px; }
+  #about .stat .num { font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+  #about .stat .label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-2); }
+  #about .diagram {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0.05), transparent 70%);
+  }
+  #about .diagram .ring { position: absolute; border: 1px solid var(--border-strong); border-radius: 50%; }
+  #about .diagram .ring.r1 { width: 55%; height: 55%; animation: spin1 40s linear infinite; }
+  #about .diagram .ring.r2 { width: 78%; height: 78%; border-style: dashed; opacity: 0.5; animation: spin2 60s linear infinite reverse; }
+  #about .diagram .core { width: 34%; height: 34%; border: 2px solid #fff; display: flex; align-items: center; justify-content: center; font-size: 10px; letter-spacing: 0.08em; text-align: center; padding: 10px; background: #000; z-index: 2; }
+  #about .diagram .node { position: absolute; width: 8px; height: 8px; background: #fff; border-radius: 50%; box-shadow: 0 0 8px #fff; }
+  @keyframes spin1 { to { transform: rotate(360deg); } }
+  @keyframes spin2 { to { transform: rotate(360deg); } }
+
+  /* ---------- features ---------- */
+  #features { background: rgba(255,255,255,0.015); }
+  .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .feature-card {
+    position: relative;
+    min-width: 0;
+    background: #000;
+    border: 1px solid var(--border);
+    padding: 28px 24px;
+    transition: border-color 0.2s ease;
+  }
+  .feature-card:hover { border-color: var(--border-strong); }
+  .feature-card .tag { font-size: 10px; color: var(--muted-2); letter-spacing: 0.08em; margin-bottom: 14px; }
+  .feature-card h4 { font-size: 15px; margin: 0 0 10px; letter-spacing: 0.04em; }
+  .feature-card p { font-size: 12.5px; color: var(--muted); line-height: 1.65; margin: 0; }
+
+  /* ---------- evidence example card ---------- */
+  #evidence .evidence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  #evidence .evidence-grid > div { min-width: 0; }
+  #evidence p { color: var(--muted); font-size: 14px; line-height: 1.8; margin: 0 0 18px; }
+  .example-card {
+    border: 1px solid rgba(94, 231, 255, 0.35);
+    border-left: 3px solid #5ee7ff;
+    padding: 20px 22px;
+    background: rgba(94, 231, 255, 0.03);
+  }
+  .example-card .example-tag { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #5ee7ff; margin-bottom: 12px; }
+  .example-card .example-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 9px 0; border-top: 1px solid var(--border); }
+  .example-card .example-row:first-of-type { border-top: none; }
+  .example-card .example-row .src { color: var(--text); }
+  .example-card .example-row .conf { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .example-card .example-row .conf.low { color: var(--muted-2); }
+  .example-card .example-row .conf.high { color: #5ee7ff; }
+  .example-caption { font-size: 11.5px; color: var(--muted-2); font-style: italic; margin-top: 14px; }
+
+  /* ---------- reliability / honesty ---------- */
+  #honesty { background: rgba(255,255,255,0.015); }
+  .limit-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .limit-card { border: 1px solid var(--border); padding: 20px 22px; }
+  .limit-card .limit-tag { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 10px; }
+  .limit-card p { font-size: 12.5px; color: var(--muted); line-height: 1.7; margin: 0; }
+
+  /* ---------- how it works ---------- */
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .step { min-width: 0; border-top: 1px solid var(--border-strong); padding-top: 16px; }
+  .step .n { font-size: 26px; font-weight: 700; opacity: 0.3; margin-bottom: 10px; }
+  .step h5 { font-size: 13px; margin: 0 0 8px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .step p { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0; }
+
+  /* ---------- final cta ---------- */
+  #cta { text-align: center; padding: 110px 28px; }
+  #cta h3 { font-size: clamp(28px, 5vw, 50px); margin: 0 0 16px; letter-spacing: 0.02em; }
+  #cta p { color: var(--muted); font-size: 13px; margin: 0 0 36px; }
+
+  /* ---------- footer ---------- */
+  footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 28px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: rgba(255,255,255,0.015);
+  }
+  footer .dots { display: flex; gap: 4px; align-items: center; }
+  footer .dots span { width: 4px; height: 4px; border-radius: 50%; background: #fff; opacity: 0.3; animation: footer-pulse 1.6s ease-in-out infinite; }
+  footer .dots span:nth-child(2) { animation-delay: 0.2s; }
+  footer .dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes footer-pulse { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
+
+  @media (max-width: 860px) {
+    nav.main-nav { display: none; }
+    #about .about-grid { grid-template-columns: 1fr; }
+    #evidence .evidence-grid { grid-template-columns: 1fr; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr 1fr; }
+    .limit-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="bg-layer"><canvas class="bg-network" aria-hidden="true"></canvas><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+<div class="page-corner tl"></div><div class="page-corner tr"></div><div class="page-corner bl"></div><div class="page-corner br"></div>
+
+<header>
+  <a class="logo-link" href="index.html"><h1>Discovery.Ai</h1></a>
+  <nav class="main-nav">
+    <a href="#about">About</a>
+    <a href="#evidence">Evidence</a>
+    <a href="#features">Features</a>
+    <a href="#how">How it works</a>
+    <a href="#honesty">Limits</a>
+    <a href="/docs">Docs</a>
+  </nav>
+  <a class="nav-cta" href="/chat">Launch App →</a>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+    <div class="eyebrow"><span class="dot"></span><span>Recursive investigation, live</span></div>
+    <h2>Construct a model of<br><em>anything</em> — through conversation.</h2>
+    <p class="lede">Ask a question. The system recursively decomposes it, investigates each
+      piece with real reasoning, and builds a live graph of what it explored —
+      not a finished answer handed to you, a trace of how it actually got there.</p>
+    <div class="cta-row">
+      <a class="btn-primary" href="/chat">Launch App →</a>
+      <a class="btn-secondary" href="#about">See how it works</a>
+    </div>
+    <div class="scroll-hint">scroll ↓</div>
+  </section>
+
+  <section class="block" id="about">
+    <div class="inner">
+      <div class="section-label"><span>01 // about</span><span class="line"></span></div>
+      <div class="about-grid">
+        <div>
+          <h3 class="title">An investigation graph, not a knowledge base</h3>
+          <p>Most tools that answer questions give you a paragraph and hide the
+            work. Discovery.Ai does the opposite: every question gets recursively
+            broken into sub-questions, each one investigated on its own, and the
+            whole process is rendered as a graph you can navigate.</p>
+          <p>Zoom into any node to see what's actually known about it. Go deeper
+            to trigger a fresh investigation. Switch lenses — economic,
+            technical, historical — and watch the same entity get re-explored
+            through a different frame entirely.</p>
+          <p>It's deliberately honest about what it is: a trace of how the
+            system explored a subject, not a claim that the subject is now
+            fully modeled. The graph grows exactly as far as you push it.</p>
+          <div class="stat-row">
+            <div class="stat"><div class="num">6</div><div class="label">Real evidence sources per question</div></div>
+            <div class="stat"><div class="num">4</div><div class="label">Identity outcomes: reuse, create, ambiguous, conflict</div></div>
+          </div>
+        </div>
+        <div class="diagram">
+          <div class="ring r2"></div>
+          <div class="ring r1"></div>
+          <div class="node" style="top: 8%; left: 50%;"></div>
+          <div class="node" style="top: 50%; left: 92%;"></div>
+          <div class="node" style="top: 88%; left: 30%;"></div>
+          <div class="node" style="top: 30%; left: 6%;"></div>
+          <div class="core">INVESTIGATION<br>TRACE</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="evidence">
+    <div class="inner">
+      <div class="section-label"><span>02 // evidence</span><span class="line"></span></div>
+      <div class="evidence-grid">
+        <div>
+          <h3 class="title">Real sources, scored honestly — even when they're wrong</h3>
+          <p>Every answer can pull from six real, named retrievers: Tavily, Semantic Scholar,
+            arXiv, Open Library, the YouTube Data API, and Wikipedia. Each source becomes a claim
+            with its own confidence score — not "how sure the model is," but how well that
+            specific source actually answers the question.</p>
+          <p>A source that misses the point isn't hidden — it's attached and scored low, so you
+            can see exactly what the system considered and correctly discounted.</p>
+        </div>
+        <div class="example-card">
+          <div class="example-tag">Real claims — "Card Payment" investigation</div>
+          <div class="example-row"><span class="src">Payment processor (Wikipedia)</span><span class="conf high">high confidence</span></div>
+          <div class="example-row"><span class="src">Centurion Card (Wikipedia)</span><span class="conf high">high confidence</span></div>
+          <div class="example-row"><span class="src">Expected Performance of the ATLAS Experiment (arXiv)</span><span class="conf low">~10% confidence</span></div>
+          <div class="example-row"><span class="src">Observation of a rare B⁰ₛ decay (arXiv)</span><span class="conf low">~10% confidence</span></div>
+          <div class="example-caption">The two arXiv papers are CERN particle-physics results that matched on keywords, not topic — correctly scored near zero instead of presented as equally good evidence.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="features">
+    <div class="inner">
+      <div class="section-label center"><span class="line left"></span><span>03 // capabilities</span><span class="line"></span></div>
+      <h3 class="title center-title" style="text-align:center">What the system actually does</h3>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 01 ]</div>
+          <h4>Recursive investigation</h4>
+          <p>Every question is answered, decomposed one narrower sub-question at a time, or
+            honestly flagged as a boundary — never planned as a batch upfront.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 02 ]</div>
+          <h4>Four-outcome identity resolution</h4>
+          <p>Discovering "Router" doesn't just reuse-or-create by name — REUSE, CREATE, AMBIGUOUS,
+            and CONFLICT are kept distinct so the graph never silently guesses.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 03 ]</div>
+          <h4>Typed relationships</h4>
+          <p>Not everything is "decomposes_into" — routes_to, regulates, depends_on and more are
+            extracted as their own decision, then canonicalized for consistency.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 04 ]</div>
+          <h4>Click any node to inspect it</h4>
+          <p>Every entity opens a real panel: the question that investigated it, why, and every
+            source behind it — not a black box you have to trust.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 05 ]</div>
+          <h4>Bring your own API key</h4>
+          <p>Add a free Groq, Gemini, or Cerebras key in Settings and your investigations run on
+            your own quota — with live status on whether the shared pool is up.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 06 ]</div>
+          <h4>Switchable lenses</h4>
+          <p>Re-investigate the same entity through an economic, technical, or any named
+            dimension — the system re-frames, not just re-reads.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 07 ]</div>
+          <h4>Session history</h4>
+          <p>Every conversation is kept, switchable from the side rail, deletable when you're
+            done with it — nothing is silently overwritten.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 08 ]</div>
+          <h4>Google sign-in</h4>
+          <p>Your investigations are yours — sign in with Google and every graph and session is
+            scoped privately to your account.</p>
+        </div>
+        <div class="feature-card">
+          <div class="corner tl"></div><div class="corner br"></div>
+          <div class="tag">[ 09 ]</div>
+          <h4>Honest provenance</h4>
+          <p>Ask "why is this here" on any entity and see exactly which question surfaced it —
+            the graph never hides its own reasoning.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="how">
+    <div class="inner">
+      <div class="section-label"><span>04 // how it works</span><span class="line"></span></div>
+      <h3 class="title">From question to graph</h3>
+      <div class="steps">
+        <div class="step"><div class="n">01</div><h5>Ask</h5><p>Type any question — as broad or specific as you like.</p></div>
+        <div class="step"><div class="n">02</div><h5>Decide</h5><p>The agent answers directly, decomposes into one narrower sub-question, or flags a real boundary.</p></div>
+        <div class="step"><div class="n">03</div><h5>Investigate</h5><p>Each sub-question is resolved on its own before the next decision is made, informed by what's now known.</p></div>
+        <div class="step"><div class="n">04</div><h5>Gather evidence</h5><p>Real sources are retrieved and scored — honestly, including when they don't fit.</p></div>
+        <div class="step"><div class="n">05</div><h5>Resolve identity</h5><p>New entities and relationships are only written when the system is genuinely sure they're new — or genuinely sure they're not.</p></div>
+        <div class="step"><div class="n">06</div><h5>Navigate</h5><p>Zoom, go deeper, switch lenses, or compare — the graph is yours to explore.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="honesty">
+    <div class="inner">
+      <div class="section-label"><span>05 // reliability</span><span class="line"></span></div>
+      <h3 class="title">What this doesn't promise</h3>
+      <p style="max-width:680px">Being upfront about limits is part of the design. Full technical
+        detail is in the <a href="/docs" style="color:#fff">documentation</a> — the short version:</p>
+      <div class="limit-grid">
+        <div class="limit-card">
+          <div class="limit-tag">Not a verified knowledge base</div>
+          <p>A trace of one investigation, backed by real evidence — not a claim that any subject
+            is now fully or correctly modeled.</p>
+        </div>
+        <div class="limit-card">
+          <div class="limit-tag">Free-tier LLM quotas are real</div>
+          <p>Shared providers can run dry at busy times, slowing or failing an investigation for
+            reasons unrelated to your question. Your own API key fixes this.</p>
+        </div>
+        <div class="limit-card">
+          <div class="limit-tag">Evidence relevance isn't perfect</div>
+          <p>Keyword search sometimes returns off-topic sources. They're scored honestly low, not
+            hidden — the confidence score is the signal to read.</p>
+        </div>
+        <div class="limit-card">
+          <div class="limit-tag">Synthesis can over-smooth disagreement</div>
+          <p>Genuinely competing explanations can get presented as complementary. Read the
+            underlying claims yourself on contested topics.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="cta">
+    <div class="section-label center" style="margin-bottom:24px"><span class="line left"></span><span>ready</span><span class="line"></span></div>
+    <h3>Start investigating.</h3>
+    <p>Sign in with Google and ask your first question.</p>
+    <div class="cta-row">
+      <a class="btn-primary" href="/chat">Launch App →</a>
+      <a class="btn-secondary" href="/docs">Read the docs</a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="dots"><span></span><span></span><span></span></div>
+  <div>DISCOVERY.AI · WEBSITE</div>
+</footer>
+
+<script>
+  // Backend origin for the two API calls this page makes (telemetry only --
+  // this page still renders with zero API calls if both fail). Same pattern
+  // as chat.html's CONFIG.BACKEND_URL; blanked to '' on the VM deploy so it
+  // resolves same-origin there instead of cross-origin to Render.
+  const CONFIG = { BACKEND_URL: 'https://discovery-ai-bosm.onrender.com' };
+  // Recording + looped playback of real cursor paths is home-page-only, by
+  // explicit design (docs/Memory.md's cursor-flow redesign) -- docs.html
+  // loads the same fluid-bg.js but leaves this unset, so it only ever gets
+  // the local live-cursor fluid effect, never records or fetches paths.
+  window.FLUID_HISTORY_ENABLED = true;
+</script>
+<script src="/wasm/fluid-bg.js"></script>
+</body>
+</html>

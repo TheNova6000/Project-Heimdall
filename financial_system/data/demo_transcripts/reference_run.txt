@@ -1,0 +1,60 @@
+Project Heimdall -- live demo
+
+
+============================================================
+SCREEN 1 -- THE FINANCIAL WORLD
+============================================================
+Payment pay_7db1e1a7f4  amount=7337.51  status=failed
+  Customer     -> cust_0016
+  Order        -> ord_9cce6ea7d5
+  Device       -> dev_0016
+  Instrument   -> instr_53db26ca85
+  Settlement   -> (none -- payment failed or never settled)
+  reaches_bank = False
+
+============================================================
+SCREEN 2 -- INTELLIGENCE: RECOVERY'S FINDING
+============================================================
+Payment:           pay_7db1e1a7f4
+Decision:          RETRY
+Decision score:    0.85  (category base rate, not a per-instance guess)
+Reason:            failure_reason=technical_failure is recoverable; category's own historical retry-success rate is 85% (a base rate, not a per-instance guess)
+Evidence:          ['pay_7db1e1a7f4', 'ord_9cce6ea7d5']
+
+============================================================
+SCREEN 3 -- POLICY & ACTION
+============================================================
+Policy outcome:    ALLOW  (rule: R3_RECOVERY_RETRY_ALLOW)
+Authorized action: RETRY_PAYMENT
+
+Executing...
+
+============================================================
+SCREEN 4 -- OUTCOME BECOMES A FINANCIAL EVENT
+============================================================
+Gateway outcome:   SUCCESS
+Event recorded:    ActionOutcomeObserved  at 2026-09-03T09:28:09.217446+00:00
+
+Payment status (projected from the event, not hand-edited): success
+Failure reason:    None
+
+============================================================
+SCREEN 5 -- FRESH RE-EVALUATION
+============================================================
+Building a brand-new graph from the changed state -- no Python object
+carries anything over from Screen 2's call.
+
+Fresh Recovery decision: DO_NOT_RETRY
+Reason:                  payment pay_7db1e1a7f4 is not currently failed (status='success') -- nothing to recover
+
+============================================================
+SUPPORTING VIEW -- ONE SHARED FINANCIAL WORLD
+============================================================
+RECOVERY   pay_f63eecc054: RETRY  (score=0.45)
+CONTROLLER sett_bac5b4c642: PASS
+RISK       dev_0184: HOLD  (score=0.95)
+
+============================================================
+DONE
+============================================================
+Loop closed correctly: True
