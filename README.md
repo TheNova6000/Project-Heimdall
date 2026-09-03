@@ -261,6 +261,15 @@ investigation substrate and compound cross-domain reasoning across Risk,
 Controller, and Recovery), deliberately not implemented for this
 submission, written before being asked rather than after.
 
+`FINANCIAL_INTELLIGENCE_RESEARCH_AND_GAP_REPORT.md` — a bounded audit of
+this system against real external benchmarks and production payment
+platforms (Razorpay, Adyen, Elliptic, FinQA, Finance Agent Benchmark):
+what Heimdall already gets right (several hard-won engineering decisions
+turn out to match documented production requirements exactly), and what's
+honestly still untested (temporal-drift and class-imbalance robustness
+for Risk, cost-sensitive decisioning for Recovery). No implementation
+follows from it automatically.
+
 ## Track
 
 Submitted under **AI Revenue Recovery**. **AI Finance Controller** and
