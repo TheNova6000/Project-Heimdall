@@ -33,7 +33,7 @@ Executing...
 SCREEN 4 -- OUTCOME BECOMES A FINANCIAL EVENT
 ============================================================
 Gateway outcome:   SUCCESS
-Event recorded:    ActionOutcomeObserved  at 2026-09-03T12:26:59.581644+00:00
+Event recorded:    ActionOutcomeObserved  at 2026-09-03T13:38:05.929546+00:00
 
 Payment status (projected from the event, not hand-edited): success
 Failure reason:    None
@@ -57,6 +57,11 @@ Payment pay_f63eecc054 -- multiple agents, same real payment, real disagreement:
 
   CONFLICT DETECTED (not silently averaged away):
   - Risk flags HOLD on this customer's device while Recovery independently proposes RETRY on this payment -- recommend REVIEW before executing the retry.
+
+  POLICY
+    Recovery proposed RETRY (category base rate 45%)
+    Expected utility: Rs.-2174.10 (value Rs.4885.61, fee Rs.97.71, HIGH-risk fraud exposure Rs.4274.91)
+    -> BLOCK (R0_RECOVERY_EV_NEGATIVE_BLOCK)
 
 ============================================================
 DONE

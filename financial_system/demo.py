@@ -39,6 +39,7 @@ from financial_system.financial_state.builder import build_financial_state
 from financial_system.financial_state.store import FinancialStateStore
 from financial_system.orchestrator.orchestrator import process_payment
 from financial_system.policy.engine import evaluate
+from financial_system.recovery.expected_value import compute_expected_value
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.reconciliation.controller import run_controller_for_settlement
 from financial_system.risk.risk_agent import run_risk_for_device
@@ -173,6 +174,22 @@ def supporting_view(graph):
         print("\n  CONFLICT DETECTED (not silently averaged away):")
         for c in conflict_case.conflicts:
             print(f"  - {c}")
+
+        # Expected-value Recovery decisioning (Phase 5/6): the same real
+        # value/fee/cross-domain-risk economics already proven in
+        # financial_system/recovery/expected_value.py, evaluated here
+        # through the actual Policy engine -- not a separate narrative.
+        rv = conflict_case.recovery_verdict
+        if rv is not None and rv.proposed_action.startswith("RETRY"):
+            ev = compute_expected_value(graph, conflict_case.subject)
+            if ev is not None:
+                policy_decision = evaluate(rv, has_conflict=True, ev_result=ev)
+                print("\n  POLICY")
+                print(f"    Recovery proposed {rv.decision} (category base rate {rv.decision_score:.0%})")
+                print(f"    Expected utility: Rs.{ev.expected_value:.2f} "
+                      f"(value Rs.{ev.value:.2f}, fee Rs.{ev.fee_cost:.2f}, "
+                      f"{ev.risk_tier}-risk fraud exposure Rs.{ev.harm_cost:.2f})")
+                print(f"    -> {policy_decision.outcome} ({policy_decision.rule_id})")
         return
 
     # Fallback -- should not trigger against the committed dataset (25 real
