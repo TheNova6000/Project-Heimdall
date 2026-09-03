@@ -17,3 +17,4 @@ financial_system/data/phase5_results/
 # OS
 .DS_Store
 Thumbs.db
+.claude/
