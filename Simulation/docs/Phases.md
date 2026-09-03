@@ -44,6 +44,50 @@ provenance of the new settlement-timing rule, and honest caveats
 mechanics, and opening balances remain outside the ledger's scope,
 exactly as in Phase 1).
 
+## Phase 2.5 — Institutional & social abstractions (DONE)
+
+Built: two *structural* abstractions layered over the existing Person/
+Bank/Merchant agents, per Architecture.md's guiding principle that only
+Person/Bank/Merchant carry probabilistic decision logic — nothing built
+here is a new decision-maker. (A) A second, savings Bank account per
+Person (`owner_type="person_savings"`), with a fixed fraction of every
+salary payment swept into it (`world/engine.py`'s `SAVINGS_SWEEP_
+FRACTION`); purchases still only ever draw from checking. (B) Three new
+dataclasses in `world/models.py`: `Household` (groups Persons, a further
+fixed fraction of salary sweeps into a shared account —
+`HOUSEHOLD_SWEEP_FRACTION`), `Organization` (groups Persons as employees,
+gives the group a real, ledger-backed revenue account — an
+Organization-employed person's salary is a genuine `post_transfer` from
+that account, not the synthetic `employer:<id>` convention, so payroll
+can, in principle, fail if underfunded — it did not in this session's
+example run, by generous design, not by structural prevention), and
+`Community` (a deliberately inert grouping of Households/Organizations,
+with NO money-movement mechanic at all, per the project owner's own
+explicit framing that this abstraction should exist for possible future
+use without inventing a reason for it now). Also built: a standalone
+`validation/` package (Part B of this task) that samples a completed
+run's output and reports two clearly separate things — B.1 internal
+mechanism consistency (double-entry invariant, no negative balances, the
+causal balance/failure-rate check, savings/household accumulation
+accuracy, organization payroll traceability) and B.2 comparison against
+`docs/Research.md`'s cited real-world numbers (income distribution shape,
+spend/income ratio by income level, settlement timing — with fraud/
+credit/loans explicitly reported NOT APPLICABLE, since they remain
+design-only per Research.md Part C). The validation system's B.2 check
+correctly detected and reported, from real simulation output, the exact
+gap Research.md's own prose already predicted: this simulation's
+purchase-amount mechanic does NOT reproduce the real-world pattern of
+poorer people spending a larger income share (bottom-income-quartile vs.
+top-income-quartile spend/income ratio differed by only ~1% relatively in
+a 500-person/120-day run, well under the 15% threshold that would
+indicate the real pattern). 45 tests passing (24 from Phase 1/2 + 21 new
+— `tests/test_phase25.py` and `tests/test_validation.py`). See
+`Simulation/docs/Memory.md`'s "Phase 2.5" section for full design
+rationale, every new constant's provenance, and honest caveats (notably:
+Household's size distribution is an uncited, honestly-labeled guess, and
+Organization revenue funding is a one-time world-generation-time lump sum
+rather than a periodic stream).
+
 ## Phase 3 — Behavioral realism (NOT STARTED)
 
 Replace Phase 1's placeholder/assumption-labeled probability rules

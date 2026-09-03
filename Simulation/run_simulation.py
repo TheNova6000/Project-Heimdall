@@ -16,6 +16,7 @@ import argparse
 import csv
 import dataclasses
 import datetime
+import json
 import os
 import sys
 
@@ -41,15 +42,38 @@ def write_output(result: SimulationResult, outdir: str) -> None:
         if account.owner_type == "person":
             person_balance[account.owner_id] = account.balance
 
+    # Phase 2.5: reverse lookups so persons.csv can show which Household/
+    # Organization (if any) each person belongs to, without storing those
+    # ids on the Person dataclass itself (Person's fields stay exactly
+    # Architecture.md's data model -- household_id/organization_id are
+    # auxiliary output-layer metadata, computed here from Household.
+    # person_ids / Organization.employee_person_ids, not carried by the
+    # agent). Empty string, not missing, when a person belongs to neither.
+    household_by_person = {pid: h.household_id for h in result.households for pid in h.person_ids}
+    organization_by_person = {
+        pid: o.organization_id for o in result.organizations for pid in o.employee_person_ids
+    }
+
     person_rows = []
     for p in result.persons:
         row = dataclasses.asdict(p)
         row["balance"] = person_balance.get(p.person_id, p.balance)
+        row["household_id"] = household_by_person.get(p.person_id, "")
+        row["organization_id"] = organization_by_person.get(p.person_id, "")
         person_rows.append(row)
     _write_csv(
         os.path.join(outdir, "persons.csv"),
         person_rows,
-        ["person_id", "name", "income_monthly", "balance", "risk_preference", "payday"],
+        [
+            "person_id",
+            "name",
+            "income_monthly",
+            "balance",
+            "risk_preference",
+            "payday",
+            "household_id",
+            "organization_id",
+        ],
     )
 
     bank_rows = [{"bank_id": b.bank_id, "name": b.name} for b in result.banks]
@@ -134,6 +158,72 @@ def write_output(result: SimulationResult, outdir: str) -> None:
             "description",
             "transaction_id",
         ],
+    )
+
+    # Phase 2.5: households.csv / organizations.csv / communities.csv --
+    # one file per new entity type, matching Design.md's existing
+    # "lowercase, underscore-separated, one file per entity type"
+    # convention. member-id lists use a JSON array string, same convention
+    # as events.csv's `payload` column (Design.md: "JSON only where a
+    # record's shape is genuinely nested... a flat CSV would lose
+    # information" -- a variable-length id list is exactly that case).
+    household_account_balance = {
+        a.owner_id: a.balance for a in result.accounts if a.owner_type == "household"
+    }
+    household_rows = [
+        {
+            "household_id": h.household_id,
+            "person_ids": json.dumps(h.person_ids),
+            "household_account_id": h.household_account_id,
+            "balance": household_account_balance.get(h.household_id, 0.0),
+        }
+        for h in result.households
+    ]
+    _write_csv(
+        os.path.join(outdir, "households.csv"),
+        household_rows,
+        ["household_id", "person_ids", "household_account_id", "balance"],
+    )
+
+    org_revenue_balance = {
+        a.owner_id: a.balance for a in result.accounts if a.owner_type == "organization_revenue"
+    }
+    organization_rows = [
+        {
+            "organization_id": o.organization_id,
+            "name": o.name,
+            "employee_person_ids": json.dumps(o.employee_person_ids),
+            "num_employees": len(o.employee_person_ids),
+            "revenue_account_id": o.revenue_account_id,
+            "balance": org_revenue_balance.get(o.organization_id, 0.0),
+        }
+        for o in result.organizations
+    ]
+    _write_csv(
+        os.path.join(outdir, "organizations.csv"),
+        organization_rows,
+        [
+            "organization_id",
+            "name",
+            "employee_person_ids",
+            "num_employees",
+            "revenue_account_id",
+            "balance",
+        ],
+    )
+
+    community_rows = [
+        {
+            "community_id": c.community_id,
+            "household_ids": json.dumps(c.household_ids),
+            "organization_ids": json.dumps(c.organization_ids),
+        }
+        for c in result.communities
+    ]
+    _write_csv(
+        os.path.join(outdir, "communities.csv"),
+        community_rows,
+        ["community_id", "household_ids", "organization_ids"],
     )
 
     txn_rows = [dataclasses.asdict(t) for t in result.transactions]

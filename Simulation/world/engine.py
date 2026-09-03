@@ -47,7 +47,7 @@ from world.agents.bank import Bank, post_transfer
 from world.agents.merchant import MERCHANT_CATEGORIES, Merchant
 from world.agents.person import Person
 from world.clock import SimClock
-from world.models import Account, Event, Transaction
+from world.models import Account, Community, Event, Household, Organization, Transaction
 
 # ---------------------------------------------------------------------------
 # Population-generation constants (Phase 1: creating a plausible starting
@@ -87,6 +87,90 @@ PAYDAY_RANGE = (1, 28)
 
 EMPLOYER_PREFIX = "employer"  # synthetic, unmodeled money source for salary
 
+# ---------------------------------------------------------------------------
+# Phase 2.5 -- structural abstractions (Household, Organization, Community).
+# See docs/Memory.md's "Phase 2.5" section for the full design rationale.
+# Per Architecture.md's guiding principle, none of these introduce a new
+# probabilistic DECISION-MAKER -- they are account/grouping structures over
+# the same three agent types (Person/Bank/Merchant) that already exist; the
+# only new *behavior* is where a slice of an existing salary payment is
+# routed (still governed entirely by Person.maybe_receive_income's existing
+# probability rule -- these constants only affect the split of an amount
+# that rule already decided to pay).
+# ---------------------------------------------------------------------------
+
+# MODELING ASSUMPTION: a fixed 15% of every salary payment is swept into the
+# person's own savings account instead of their checking account, before any
+# household sweep (below) is applied. Loosely motivated by the common
+# personal-finance rule of thumb "save roughly 15-20% of income" (e.g. the
+# well-known "50/30/20" budgeting guideline popularized by Elizabeth
+# Warren's "All Your Worth", 2005) as a defensible, memorable round number --
+# this was NOT independently verified against real household savings-rate
+# data for this task (that would need its own dedicated research pass, out
+# of this task's scope per its own instructions), so it stays a named
+# MODELING ASSUMPTION, not a citation dressed up as research-grounded.
+SAVINGS_SWEEP_FRACTION = 0.15
+
+# MODELING ASSUMPTION: a further fixed 10% of every salary payment is swept
+# into the person's household's shared account (see Household below),
+# applied ON TOP OF (not instead of) the savings sweep above -- i.e. a
+# person's gross pay splits 75% checking / 15% savings / 10% household by
+# construction (checking gets the exact remainder: 1 - SAVINGS_SWEEP_FRACTION
+# - HOUSEHOLD_SWEEP_FRACTION). Chosen smaller than the savings fraction
+# because household pooling is modeled as a secondary behavior layered on
+# top of a person's own saving, not a replacement for it. Applies uniformly
+# regardless of household size, including a size-1 "household" (see
+# HOUSEHOLD_SIZE_WEIGHTS below) -- for a single-person household this sweep
+# is practically indistinguishable from a second personal savings-like
+# account; that is a deliberate, harmless degenerate case of treating every
+# household uniformly, not a hidden special rule.
+HOUSEHOLD_SWEEP_FRACTION = 0.10
+
+# MODELING ASSUMPTION: household size is drawn from a simple, named discrete
+# distribution weighted toward small households (1-4 persons). This task's
+# brief permitted an OPTIONAL bounded WebSearch for real household-size-
+# distribution stats to justify this instead; that search was not done in
+# this session (judged not worth the scope for a purely structural,
+# behaviorally-inert-beyond-the-sweep grouping) -- these weights are
+# deliberately labeled an honest, uncited assumption, not dressed up as
+# research-grounded. Round numbers, not fit to any dataset.
+HOUSEHOLD_SIZE_WEIGHTS: dict[int, float] = {1: 0.30, 2: 0.35, 3: 0.20, 4: 0.15}
+
+# MODELING ASSUMPTION: roughly half the population is employed by a modeled
+# Organization (real, ledger-backed payroll -- see Organization below); the
+# other half keeps Phase 1/2's original synthetic "employer:<person_id>"
+# convention unchanged. 0.5 is a round, defensible split chosen so BOTH
+# salary-payment code paths are meaningfully exercised in every run, not
+# because real employment-by-organization-size data was consulted.
+ORG_MEMBERSHIP_FRACTION = 0.5
+
+# MODELING ASSUMPTION: target average employees per Organization, used only
+# to decide how many Organizations to create (see _build_world). An
+# arbitrary, named round number, not derived from real firm-size data.
+ORG_TARGET_SIZE = 25
+
+# MODELING ASSUMPTION: each Organization's revenue account is funded ONCE,
+# at world-generation time, with a buffer sized to comfortably cover that
+# org's own full-run payroll (that org's employees' combined monthly income,
+# scaled to the run's length in months, times this safety multiplier) -- a
+# deliberate choice to fund generously so payroll failure is RARE in a
+# typical run, NOT to structurally prevent it: `post_transfer` (world/
+# agents/bank.py) still returns False, and `_maybe_pay_income` below still
+# records a real `payment_failure`, if an Organization's revenue account
+# genuinely can't cover a given payday. A smaller population-to-multiplier
+# ratio, or a run longer than this buffer anticipates, CAN still produce a
+# real organization payroll failure -- that possibility is intentionally
+# left open, not engineered away (this task's explicit request).
+ORG_FUNDING_SAFETY_MULTIPLIER = 1.2
+
+# MODELING ASSUMPTION: households and organizations are grouped into a
+# small, fixed number of named "communities" purely for future aggregate
+# reporting -- Community has NO money-movement mechanic of its own (see
+# world/models.py's Community docstring and docs/Memory.md's "Phase 2.5"
+# section for why this is deliberately inert). 5 is an arbitrary round
+# number, not derived from any real geographic/community-size data.
+NUM_COMMUNITIES = 5
+
 
 @dataclass
 class SimulationResult:
@@ -95,6 +179,9 @@ class SimulationResult:
     persons: list[Person]
     banks: list[Bank]
     merchants: list[Merchant]
+    households: list[Household]  # Phase 2.5
+    organizations: list[Organization]  # Phase 2.5
+    communities: list[Community]  # Phase 2.5
     accounts: list[Account]  # flattened across all banks, in creation order
     transactions: list[Transaction]
     events: list[Event]
@@ -165,6 +252,21 @@ class SimulationEngine:
         # and _run_settlement below)
         self.merchant_pending_account: dict[str, str] = {}
 
+        # Phase 2.5: Household/Organization/Community registries and the
+        # per-person lookups _maybe_pay_income needs (see docs/Memory.md's
+        # "Phase 2.5" section).
+        self.households: list[Household] = []
+        self.organizations: list[Organization] = []
+        self.communities: list[Community] = []
+        self.household_by_id: dict[str, Household] = {}
+        self.organization_by_id: dict[str, Organization] = {}
+        self.person_savings_account: dict[str, str] = {}
+        self.person_household: dict[str, str] = {}  # person_id -> household_id
+        self.person_organization: dict[str, str] = {}  # person_id -> organization_id
+        # (only present for the ORG_MEMBERSHIP_FRACTION of persons who
+        # belong to one -- absent, not None, for everyone else)
+        self.org_bank: dict[str, Bank] = {}  # organization_id -> its Bank
+
         self._build_world()
 
     # ------------------------------------------------------------------
@@ -207,6 +309,27 @@ class SimulationEngine:
                 )
             )
 
+        # Phase 2.5 A.3: create Organizations' bank accounts now (employee
+        # lists start empty; membership is decided per-person below, and
+        # the revenue account is funded once, after the Person loop, when
+        # every employee's income is known -- see the end of this method).
+        num_organizations = max(1, round((self.num_persons * ORG_MEMBERSHIP_FRACTION) / ORG_TARGET_SIZE))
+        for i in range(1, num_organizations + 1):
+            bank = self.rng.choice(self.banks)
+            organization_id = f"org_{i:03d}"
+            revenue_account_id = self.ids.next_account_id()
+            bank.open_account(revenue_account_id, owner_id=organization_id, owner_type="organization_revenue")
+            self._account_bank[revenue_account_id] = bank
+            self.org_bank[organization_id] = bank
+            org = Organization(
+                organization_id=organization_id,
+                name=f"Organization {i}",
+                employee_person_ids=[],
+                revenue_account_id=revenue_account_id,
+            )
+            self.organizations.append(org)
+            self.organization_by_id[organization_id] = org
+
         for i in range(1, self.num_persons + 1):
             person_id = f"person_{i:05d}"
             income = min(
@@ -222,6 +345,17 @@ class SimulationEngine:
             risk_preference = round(self.rng.uniform(*RISK_PREFERENCE_RANGE), 3)
             payday = self.rng.randint(*PAYDAY_RANGE)
 
+            # Phase 2.5 A.3: organization membership -- one more per-person
+            # RNG draw in the existing fixed iteration order (creation
+            # order), right alongside this person's other core traits. Only
+            # decides WHICH money-source pays this person's salary later
+            # (_maybe_pay_income); it is not itself a new probabilistic
+            # behavior rule beyond "does this person belong to an org."
+            if self.organizations and self.rng.random() < ORG_MEMBERSHIP_FRACTION:
+                org = self.rng.choice(self.organizations)
+                org.employee_person_ids.append(person_id)
+                self.person_organization[person_id] = org.organization_id
+
             bank = self.rng.choice(self.banks)
             account_id = self.ids.next_account_id()
             bank.open_account(
@@ -233,6 +367,15 @@ class SimulationEngine:
             self._account_bank[account_id] = bank
             self.person_account[person_id] = account_id
 
+            # Phase 2.5 A.1: a second, savings account per person. Opens at
+            # zero -- no "opening savings balance" concept was requested,
+            # only the ongoing salary-sweep mechanism (see
+            # SAVINGS_SWEEP_FRACTION / _maybe_pay_income below).
+            savings_account_id = self.ids.next_account_id()
+            bank.open_account(savings_account_id, owner_id=person_id, owner_type="person_savings")
+            self._account_bank[savings_account_id] = bank
+            self.person_savings_account[person_id] = savings_account_id
+
             self.persons.append(
                 Person(
                     person_id=person_id,
@@ -241,6 +384,110 @@ class SimulationEngine:
                     balance=opening_balance,
                     risk_preference=risk_preference,
                     payday=payday,
+                )
+            )
+
+        # Phase 2.5 A.3: fund each Organization's revenue account once, now
+        # that every employee (and their income) is known. Uses
+        # fund_external -- the same primitive/pattern bank_reserve funding
+        # already uses -- per this task's explicit instruction; see
+        # ORG_FUNDING_SAFETY_MULTIPLIER's docstring above for the buffer's
+        # exact provenance/rationale. Recorded as a real Transaction (kind=
+        # "org_funding") so it stays traceable, UNLIKE Person/Merchant
+        # opening balances, which deliberately bypass the ledger entirely
+        # (see world/agents/bank.py's module docstring, "Opening balances
+        # are still out of ledger scope") -- an organization's revenue is a
+        # modeled external inflow the task asked to make ledger-real, not a
+        # world-generation initial condition.
+        funding_timestamp = self.clock.timestamp(hour=0, minute=0, second=0)
+        income_by_person = {p.person_id: p.income_monthly for p in self.persons}
+        for org in self.organizations:
+            if not org.employee_person_ids:
+                continue
+            total_monthly_payroll = sum(income_by_person[pid] for pid in org.employee_person_ids)
+            buffer = round(
+                total_monthly_payroll * (self.num_days / 30.0) * ORG_FUNDING_SAFETY_MULTIPLIER, 2
+            )
+            bank = self.org_bank[org.organization_id]
+            txn_id = self.ids.next_txn_id()
+            bank.fund_external(
+                org.revenue_account_id,
+                buffer,
+                funding_timestamp,
+                description=f"external revenue funding for {org.organization_id}",
+                entry_ids=self._new_entry_pair(),
+                transaction_id=txn_id,
+            )
+            self._record(
+                transaction_id=txn_id,
+                kind="org_funding",
+                timestamp=funding_timestamp,
+                from_id=f"external_revenue:{org.organization_id}",
+                to_id=org.organization_id,
+                amount=buffer,
+                balance_before=0.0,
+                event_type="organization_funded",
+            )
+
+        # Phase 2.5 A.2: group persons into Households sequentially, in
+        # creation order (person_id order), by repeatedly drawing a target
+        # household size from HOUSEHOLD_SIZE_WEIGHTS (see that constant's
+        # docstring for provenance). This is a SEPARATE pass over the
+        # already-built self.persons list, rather than interleaved with the
+        # loop above, specifically so a household-size decision doesn't
+        # perturb the per-person RNG draw sequence (income/opening_balance/
+        # risk/payday/org-membership) that loop already consumed -- keeps
+        # this addition's blast radius on existing per-person outcomes as
+        # small as possible.
+        idx = 0
+        household_num = 0
+        sizes = list(HOUSEHOLD_SIZE_WEIGHTS.keys())
+        weights = list(HOUSEHOLD_SIZE_WEIGHTS.values())
+        while idx < len(self.persons):
+            household_num += 1
+            size = self.rng.choices(sizes, weights=weights, k=1)[0]
+            size = min(size, len(self.persons) - idx)
+            members = self.persons[idx : idx + size]
+            idx += size
+            household_id = f"household_{household_num:05d}"
+            # The household account opens at whichever Bank the first
+            # member's own checking account lives at -- an arbitrary,
+            # RNG-free choice (spending another RNG draw here was judged
+            # unnecessary complexity for a purely structural account).
+            first_member_account_id = self.person_account[members[0].person_id]
+            bank = self._account_bank[first_member_account_id]
+            household_account_id = self.ids.next_account_id()
+            bank.open_account(household_account_id, owner_id=household_id, owner_type="household")
+            self._account_bank[household_account_id] = bank
+            member_ids = [m.person_id for m in members]
+            for pid in member_ids:
+                self.person_household[pid] = household_id
+            household = Household(
+                household_id=household_id,
+                person_ids=member_ids,
+                household_account_id=household_account_id,
+            )
+            self.households.append(household)
+            self.household_by_id[household_id] = household
+
+        # Phase 2.5 A.4: Communities -- a deliberately inert grouping of
+        # Household/Organization ids into NUM_COMMUNITIES buckets,
+        # round-robin by creation order. Pure structural bookkeeping, not a
+        # behavioral decision, so it draws NOTHING from self.rng. See
+        # world/models.py's Community docstring and docs/Memory.md's
+        # "Phase 2.5" section for why this drives no simulation behavior.
+        community_household_ids: list[list[str]] = [[] for _ in range(NUM_COMMUNITIES)]
+        community_org_ids: list[list[str]] = [[] for _ in range(NUM_COMMUNITIES)]
+        for i, household in enumerate(self.households):
+            community_household_ids[i % NUM_COMMUNITIES].append(household.household_id)
+        for i, org in enumerate(self.organizations):
+            community_org_ids[i % NUM_COMMUNITIES].append(org.organization_id)
+        for i in range(NUM_COMMUNITIES):
+            self.communities.append(
+                Community(
+                    community_id=f"community_{i + 1:02d}",
+                    household_ids=community_household_ids[i],
+                    organization_ids=community_org_ids[i],
                 )
             )
 
@@ -257,6 +504,9 @@ class SimulationEngine:
             persons=self.persons,
             banks=self.banks,
             merchants=self.merchants,
+            households=self.households,
+            organizations=self.organizations,
+            communities=self.communities,
             accounts=accounts,
             transactions=self.transactions,
             events=self.events,
@@ -384,43 +634,179 @@ class SimulationEngine:
         amount = person.maybe_receive_income(day_of_month, self.rng)
         if amount <= 0:
             return
-        account_id = self.person_account[person.person_id]
-        bank = self._account_bank[account_id]
-        balance_before = bank.balance_of(account_id)
-        # MODELING ASSUMPTION (money origin, not a rule violation of
-        # Rules.md #7): salary has to enter the modeled economy from
-        # somewhere. This project does not model employer institutions
-        # (Architecture.md scopes agents to Person/Bank/Merchant only), so
-        # income is credited from a synthetic, unmodeled "employer:<id>"
-        # source rather than from another agent's account. Rules.md #7's
-        # "no fabricated money" concerns money appearing mid-transaction
-        # between modeled agents (e.g. a debit failing but a credit still
-        # happening) -- this is a distinct, standard convention for
-        # closed-population economic simulations: income is exogenous.
-        # As of Phase 2 this is a real double-entry posting
-        # (`Bank.fund_external`: Debit this bank's own reserve asset
-        # account / Credit the person's deposit account), not the
-        # unmatched single ledger entry Phase 1 wrote.
+
+        checking_account_id = self.person_account[person.person_id]
+        checking_bank = self._account_bank[checking_account_id]
+        savings_account_id = self.person_savings_account[person.person_id]
+        savings_bank = self._account_bank[savings_account_id]
+        household_id = self.person_household[person.person_id]
+        household_account_id = self.household_by_id[household_id].household_account_id
+        household_bank = self._account_bank[household_account_id]
+
+        # Phase 2.5 A.1/A.2: gross pay splits deterministically into three
+        # components -- see SAVINGS_SWEEP_FRACTION/HOUSEHOLD_SWEEP_FRACTION's
+        # module-level docstrings for provenance. The two sweep amounts are
+        # rounded independently and checking takes the exact remainder, so
+        # the three always sum to precisely `amount` -- no stray cents lost
+        # or created by rounding.
+        savings_amount = round(amount * SAVINGS_SWEEP_FRACTION, 2)
+        household_amount = round(amount * HOUSEHOLD_SWEEP_FRACTION, 2)
+        checking_amount = round(amount - savings_amount - household_amount, 2)
+
         timestamp = self._event_timestamp()
-        txn_id = self.ids.next_txn_id()
-        bank.fund_external(
-            account_id,
-            amount,
-            timestamp,
-            description=f"salary for {person.person_id}",
-            entry_ids=self._new_entry_pair(),
-            transaction_id=txn_id,
-        )
-        from_id = f"{EMPLOYER_PREFIX}:{person.person_id}"
-        self._record(
-            transaction_id=txn_id,
+        organization_id = self.person_organization.get(person.person_id)
+
+        if organization_id is not None:
+            # Phase 2.5 A.3: this person's salary is real, ledger-backed
+            # payroll from their Organization's revenue account (see
+            # world/models.py's Organization docstring). Checked
+            # atomically against the FULL amount up front -- rather than
+            # letting checking succeed and savings/household fail
+            # separately -- so a payday either happens in full or not at
+            # all, mirroring purchase's all-or-nothing pattern instead of
+            # introducing a new partial-failure shape this project has
+            # never had.
+            org = self.organization_by_id[organization_id]
+            org_bank = self.org_bank[organization_id]
+            from_id = f"org:{organization_id}"
+            org_balance = org_bank.balance_of(org.revenue_account_id)
+            if org_balance < amount:
+                # THE genuine emergent possibility this task's brief asked
+                # for: an Organization's own revenue account couldn't cover
+                # payroll. Recorded exactly like a purchase's
+                # payment_failure (same kind, same mechanical "balance_
+                # before < amount" proof) -- just with the Organization's
+                # revenue account as the insufficient balance instead of a
+                # Person's checking account. ORG_FUNDING_SAFETY_MULTIPLIER's
+                # docstring states plainly this is meant to be rare, not
+                # structurally impossible.
+                txn_id = self.ids.next_txn_id()
+                self._record(
+                    transaction_id=txn_id,
+                    kind="payment_failure",
+                    timestamp=timestamp,
+                    from_id=from_id,
+                    to_id=person.person_id,
+                    amount=amount,
+                    balance_before=org_balance,
+                    event_type="salary_failed",
+                )
+                return
+            source_bank, source_account_id = org_bank, org.revenue_account_id
+        else:
+            # Unchanged Phase 1/2 convention for the non-Organization half
+            # of the population -- see EMPLOYER_PREFIX and Bank.
+            # fund_external's own docstring. MODELING ASSUMPTION (money
+            # origin, not a Rules.md #7 violation): income is credited from
+            # a synthetic, unmodeled "employer:<id>" source because this
+            # project does not model every employer as its own agent.
+            from_id = f"{EMPLOYER_PREFIX}:{person.person_id}"
+            source_bank, source_account_id = None, None
+
+        self._post_and_record_leg(
             kind="salary",
-            timestamp=timestamp,
+            event_type="salary_received",
             from_id=from_id,
             to_id=person.person_id,
+            amount=checking_amount,
+            timestamp=timestamp,
+            target_bank=checking_bank,
+            target_account_id=checking_account_id,
+            source_bank=source_bank,
+            source_account_id=source_account_id,
+        )
+        self._post_and_record_leg(
+            kind="savings_sweep",
+            event_type="savings_swept",
+            from_id=from_id,
+            to_id=person.person_id,
+            amount=savings_amount,
+            timestamp=timestamp,
+            target_bank=savings_bank,
+            target_account_id=savings_account_id,
+            source_bank=source_bank,
+            source_account_id=source_account_id,
+        )
+        self._post_and_record_leg(
+            kind="household_sweep",
+            event_type="household_swept",
+            from_id=from_id,
+            to_id=household_id,
+            amount=household_amount,
+            timestamp=timestamp,
+            target_bank=household_bank,
+            target_account_id=household_account_id,
+            source_bank=source_bank,
+            source_account_id=source_account_id,
+        )
+
+    def _post_and_record_leg(
+        self,
+        *,
+        kind: str,
+        event_type: str,
+        from_id: str,
+        to_id: str,
+        amount: float,
+        timestamp: str,
+        target_bank: Bank,
+        target_account_id: str,
+        source_bank: Bank | None,
+        source_account_id: str | None,
+    ) -> None:
+        """
+        Post one balanced leg of a payday (the checking, savings, or
+        household portion) and record it as its own Transaction/Event --
+        shared by both the Organization-sourced (`post_transfer`) and
+        synthetic-employer-sourced (`Bank.fund_external`) salary paths in
+        `_maybe_pay_income`. `source_bank`/`source_account_id` being None
+        selects `fund_external` (money entering from this bank's own
+        reserve); both set selects `post_transfer` (money moving from a
+        real Organization revenue account). `amount <= 0` is a no-op, same
+        convention as the underlying primitives.
+        """
+        if amount <= 0:
+            return
+        balance_before = target_bank.balance_of(target_account_id)
+        txn_id = self.ids.next_txn_id()
+        if source_bank is not None and source_account_id is not None:
+            ok = post_transfer(
+                source_bank,
+                source_account_id,
+                target_bank,
+                target_account_id,
+                amount,
+                timestamp,
+                description=f"{kind} for {to_id}",
+                entry_ids=self._new_entry_pair(),
+                transaction_id=txn_id,
+            )
+            # The caller (_maybe_pay_income) already checked the source
+            # account covers the FULL payday amount before calling any leg,
+            # and the three legs' amounts sum to exactly that full amount
+            # (by construction -- see _maybe_pay_income) -- so a per-leg
+            # failure here would indicate a real bug, not a legitimate
+            # runtime outcome, hence an assertion rather than a handled
+            # branch.
+            assert ok, f"leg-level post_transfer failed for {kind}/{to_id} despite a pre-checked source balance"
+        else:
+            target_bank.fund_external(
+                target_account_id,
+                amount,
+                timestamp,
+                description=f"{kind} for {to_id}",
+                entry_ids=self._new_entry_pair(),
+                transaction_id=txn_id,
+            )
+        self._record(
+            transaction_id=txn_id,
+            kind=kind,
+            timestamp=timestamp,
+            from_id=from_id,
+            to_id=to_id,
             amount=amount,
             balance_before=balance_before,
-            event_type="salary_received",
+            event_type=event_type,
         )
 
     # -- purchase -----------------------------------------------------------

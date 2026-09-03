@@ -93,6 +93,9 @@ class Account:
     owner_id: str  # a Person.person_id, Merchant.merchant_id, or (for a
     # reserve account) the owning Bank.bank_id
     owner_type: str  # "person" | "merchant" | "merchant_pending" | "bank_reserve"
+    # | "person_savings" | "household" | "organization_revenue" (Phase 2.5 --
+    # see world/agents/bank.py's module docstring and docs/Memory.md's
+    # "Phase 2.5" section for what each new type represents)
     balance: float = 0.0
     ledger: list[LedgerEntry] = field(default_factory=list)
 
@@ -131,6 +134,66 @@ class Transaction:
     amount: float
     kind: str  # salary | purchase | payment_failure
     balance_before: float
+
+
+@dataclass
+class Household:
+    """
+    Phase 2.5 structural abstraction (docs/Memory.md's "Phase 2.5" section
+    has the full design rationale). Per Architecture.md's guiding principle
+    ("Person/Bank/Merchant are the only agents with probabilistic decision
+    logic"), Household is NOT a new decision-maker -- it has no probability
+    functions of its own. It is a grouping of existing Person ids plus one
+    real, ledger-backed shared bank account (`household_account_id`) that a
+    fixed fraction of each member's salary is swept into (see
+    `world/engine.py`'s `_maybe_pay_income` / `HOUSEHOLD_SWEEP_FRACTION`).
+    No "household purchase" mechanic exists -- the account only ever grows.
+    """
+
+    household_id: str
+    person_ids: list[str]
+    household_account_id: str
+
+
+@dataclass
+class Organization:
+    """
+    Phase 2.5 structural abstraction. Groups Persons as "employees" and
+    gives the group one real, ledger-backed bank account
+    (`revenue_account_id`) representing revenue that is exogenous to this
+    simulation (same honest convention Phase 1 used for the synthetic
+    `employer:<person_id>` source, just now backed by a real account -- see
+    `world/agents/bank.py`'s `fund_external` and `world/engine.py`'s
+    org-sourced salary path in `_maybe_pay_income`). Like Household, this
+    is a structural/ledger abstraction over existing Person agents, not a
+    new probabilistic decision-maker -- it has no behavior of its own
+    beyond holding a balance that payroll draws down and that gets funded
+    once at world-generation time.
+    """
+
+    organization_id: str
+    name: str
+    employee_person_ids: list[str]
+    revenue_account_id: str
+
+
+@dataclass
+class Community:
+    """
+    Phase 2.5 structural abstraction, deliberately minimal per the project
+    owner's own framing (docs/Memory.md's "Phase 2.5" section): a grouping
+    of Household and Organization ids with NO money-movement mechanic and
+    no probabilistic behavior at all. It exists purely so a future session
+    could aggregate/analyze at the community level if a real reason to do
+    so ever appears -- it drives nothing in this simulation today. This is
+    intentional, not a placeholder for a cut feature; inventing a
+    "community effect" just to make this feel more complete would be
+    exactly the unjustified mechanism Rules.md #2/#5 warn against.
+    """
+
+    community_id: str
+    household_ids: list[str]
+    organization_ids: list[str]
 
 
 @dataclass

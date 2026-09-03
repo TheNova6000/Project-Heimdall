@@ -101,6 +101,9 @@ def test_same_seed_produces_byte_identical_csv_output():
             "transactions.csv",
             "events.csv",
             "ledger_entries.csv",  # Phase 2
+            "households.csv",  # Phase 2.5
+            "organizations.csv",  # Phase 2.5
+            "communities.csv",  # Phase 2.5
         ):
             path_a = os.path.join(outdir_a, filename)
             path_b = os.path.join(outdir_b, filename)
@@ -174,28 +177,56 @@ def test_transaction_fields_well_formed():
     result = _small_engine(seed=17).run()
     person_ids = {p.person_id for p in result.persons}
     merchant_ids = {m.merchant_id for m in result.merchants}
+    household_ids = {h.household_id for h in result.households}
+    organization_ids = {o.organization_id for o in result.organizations}
 
     assert result.transactions, "expected a non-trivial number of transactions"
 
-    # Phase 2 adds one new kind, "settlement" (Phases.md Phase 2: "basic
-    # settlement between Merchant and Bank" -- see world/engine.py's
-    # _run_settlement). This extends the taxonomy check below with a new
-    # branch; the salary/purchase/payment_failure branches are otherwise
-    # unchanged from Phase 1.
+    # Phase 2 added one new kind, "settlement". Phase 2.5 (docs/Memory.md's
+    # "Phase 2.5" section) adds three more: "savings_sweep"/"household_
+    # sweep" (a salary payment's savings/household legs -- world/engine.py
+    # `_maybe_pay_income`) and "org_funding" (an Organization's one-time
+    # revenue funding at world-generation time -- `_build_world`). It also
+    # widens what "salary"/"savings_sweep"/"household_sweep"/
+    # "payment_failure" rows can legitimately look like: an
+    # Organization-employed person's salary (and its sweeps) comes from a
+    # real "org:<organization_id>" source instead of the synthetic
+    # "employer:<person_id>" one, and "payment_failure" now also covers an
+    # Organization's own payroll failing to cover a payday (from_id is
+    # "org:<id>", to_id is the person who didn't get paid), not just a
+    # Person's purchase failing.
     for t in result.transactions:
         assert t.amount > 0, f"{t.transaction_id} has non-positive amount {t.amount}"
-        assert t.kind in {"salary", "purchase", "payment_failure", "settlement"}
+        assert t.kind in {
+            "salary",
+            "purchase",
+            "payment_failure",
+            "settlement",
+            "savings_sweep",
+            "household_sweep",
+            "org_funding",
+        }
         assert t.day >= 0
-        # every to_id/from_id must resolve to a known agent (person,
-        # merchant, or a synthetic source: "employer:<id>" for salary,
-        # "pending:<id>" for settlement -- see world/engine.py)
-        if t.kind == "salary":
-            assert t.from_id.startswith("employer:")
+        if t.kind in {"salary", "savings_sweep"}:
+            assert t.from_id.startswith("employer:") or t.from_id.startswith("org:")
             assert t.to_id in person_ids
+        elif t.kind == "household_sweep":
+            assert t.from_id.startswith("employer:") or t.from_id.startswith("org:")
+            assert t.to_id in household_ids
+        elif t.kind == "org_funding":
+            assert t.from_id.startswith("external_revenue:")
+            assert t.to_id in organization_ids
         elif t.kind == "settlement":
             assert t.from_id.startswith("pending:")
             assert t.to_id in merchant_ids
-        else:
+        elif t.kind == "payment_failure":
+            is_purchase_failure = t.from_id in person_ids and t.to_id in merchant_ids
+            is_payroll_failure = t.from_id.startswith("org:") and t.to_id in person_ids
+            assert is_purchase_failure or is_payroll_failure, (
+                f"{t.transaction_id} is a payment_failure with an unrecognized "
+                f"from_id/to_id shape: {t.from_id!r} -> {t.to_id!r}"
+            )
+        else:  # purchase
             assert t.from_id in person_ids
             assert t.to_id in merchant_ids
         # timestamp must be ISO 8601 parseable

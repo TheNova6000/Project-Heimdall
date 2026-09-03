@@ -70,8 +70,18 @@ def build_report(outdir: str) -> str:
     lines.append("")
 
     # -- Failure rate --------------------------------------------------------
+    # Phase 2.5: kind="payment_failure" is now shared by two distinct
+    # phenomena -- a Person's purchase failing (from_id is a person_id) and
+    # an Organization's payroll failing (from_id is "org:<id>", see
+    # world/engine.py's _maybe_pay_income). This section is specifically
+    # about PURCHASE attempts, so payroll failures are excluded here (not
+    # deleted from the data -- they still show up under "Volume" above,
+    # since that section groups generically by kind) to avoid silently
+    # blending two different failure rates into one misleading number
+    # (Rules.md #2/#5).
+    person_ids = {p["person_id"] for p in persons}
     purchases = by_kind.get("purchase", [])
-    failures = by_kind.get("payment_failure", [])
+    failures = [r for r in by_kind.get("payment_failure", []) if r["from_id"] in person_ids]
     attempts = purchases + failures
     lines.append("## Payment failure rate")
     lines.append("")

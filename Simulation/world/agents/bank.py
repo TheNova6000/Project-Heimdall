@@ -100,6 +100,17 @@ from world.models import Account, LedgerEntry
 # the one place that decides whether a "debit" increases or decreases
 # an account's cached balance (see `_post`). Everything that is not a
 # reserve/asset account is treated as a liability account.
+#
+# Phase 2.5 (docs/Memory.md "Phase 2.5" section) adds three new owner_types
+# -- "person_savings" (a Person's second account, A.1), "household" (a
+# shared account across a Household's members, A.2), and
+# "organization_revenue" (an Organization's real payroll-funding account,
+# A.3). All three are liability accounts, exactly like "person"/"merchant":
+# they only ever grow via a credit (a sweep or, for organization_revenue,
+# fund_external), and (for person_savings/household) are never debited at
+# all in this task's scope -- no "savings withdrawal" or "household
+# purchase" mechanic exists. None of the three belong in
+# ASSET_OWNER_TYPES.
 ASSET_OWNER_TYPES = {"bank_reserve"}
 
 

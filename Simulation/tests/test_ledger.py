@@ -137,9 +137,10 @@ def test_payment_failure_posts_no_ledger_entries():
 
 def test_no_negative_balance_across_all_account_types():
     """Extends tests/test_engine.py's equivalent check to the account
-    types Phase 2 introduces: bank_reserve (asset side) and
-    merchant_pending. Checked at every single ledger entry, not just
-    final state."""
+    types Phase 2 introduces (bank_reserve, merchant_pending) AND the
+    three Phase 2.5 introduces (person_savings, household,
+    organization_revenue -- docs/Memory.md's "Phase 2.5" section). Checked
+    at every single ledger entry, not just final state."""
     result = _engine(seed=5).run()
 
     owner_types_seen = set()
@@ -152,9 +153,18 @@ def test_no_negative_balance_across_all_account_types():
                 f"{entry.entry_id}: {entry.balance_after}"
             )
 
-    # Sanity: this run actually exercised every Phase 2 account type, so
-    # the check above isn't vacuously true for the new ones.
-    assert owner_types_seen == {"person", "merchant", "merchant_pending", "bank_reserve"}
+    # Sanity: this run actually exercised every account type this
+    # simulation currently has, so the check above isn't vacuously true
+    # for any of them (Phase 2.5's three new types included).
+    assert owner_types_seen == {
+        "person",
+        "merchant",
+        "merchant_pending",
+        "bank_reserve",
+        "person_savings",
+        "household",
+        "organization_revenue",
+    }
 
 
 def test_bank_reserve_account_never_decreases():
@@ -177,28 +187,47 @@ def test_bank_reserve_account_never_decreases():
             running = entry.balance_after
 
 
-def test_reserve_account_balance_equals_total_salary_paid():
-    """A direct reconciliation: each bank's reserve account balance
-    should equal the sum of salary amounts paid out through that bank
-    (Phase 2's only source of external inflow) -- proof the ledger, not
-    just the cached balance field, is internally consistent."""
+def test_reserve_account_balance_equals_total_external_inflows():
+    """A direct reconciliation: the grand total of every bank's reserve
+    account balance should equal the sum of every Transaction that is
+    genuinely sourced from `fund_external` (Phase 2's only source of
+    external inflow) -- proof the ledger, not just the cached balance
+    field, is internally consistent.
+
+    Phase 2.5 note (docs/Memory.md's "Phase 2.5" section): this is a
+    NECESSARY, not cosmetic, update to what was
+    `test_reserve_account_balance_equals_total_salary_paid` in Phase 2.
+    Reserve-account debits are no longer produced by "salary" Transactions
+    alone: (a) a synthetic-employer-sourced payday now also sweeps
+    "savings_sweep"/"household_sweep" legs through `fund_external`, each
+    its own reserve debit, and (b) an Organization-employed person's
+    salary/savings_sweep/household_sweep legs do NOT touch any bank's
+    reserve account at all -- they move through `post_transfer` from that
+    Organization's own revenue account instead (see world/engine.py's
+    `_maybe_pay_income`). What DOES still debit a bank_reserve account:
+    every synthetic-employer-sourced salary/savings_sweep/household_sweep
+    leg (from_id starts with "employer:"), plus each Organization's
+    one-time `org_funding` revenue injection (which itself IS `fund_
+    external`-sourced, per world/models.py's Organization docstring).
+    """
     result = _engine(seed=13).run()
 
-    # Reconcile from output records: sum every salary Transaction's
-    # amount, and every bank_reserve account's ledger debit total, and
-    # compare the grand totals. (A per-bank breakdown would need bank
-    # assignment info not present on SimulationResult; the grand-total
-    # check is still a real, non-tautological reconciliation -- salary
-    # and reserve-debit totals are computed from entirely different
-    # records: Transaction rows vs. LedgerEntry rows.)
-    total_salary = sum(t.amount for t in result.transactions if t.kind == "salary")
+    employer_sourced_kinds = {"salary", "savings_sweep", "household_sweep"}
+    total_employer_sourced = sum(
+        t.amount
+        for t in result.transactions
+        if t.kind in employer_sourced_kinds and t.from_id.startswith("employer:")
+    )
+    total_org_funding = sum(t.amount for t in result.transactions if t.kind == "org_funding")
+    total_external_inflow = total_employer_sourced + total_org_funding
+
     total_reserve = sum(
         entry.amount
         for account in result.accounts
         if account.owner_type == "bank_reserve"
         for entry in account.ledger
     )
-    assert round(total_salary, 2) == round(total_reserve, 2)
+    assert round(total_external_inflow, 2) == round(total_reserve, 2)
 
 
 # ---------------------------------------------------------------------------
