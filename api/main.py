@@ -177,9 +177,9 @@ class AskBody(BaseModel):
 
 
 PROVIDER_DEFAULT_MODEL = {
-    "anthropic": "claude-sonnet-4-5-20250929",
-    "groq": "llama-3.3-70b-versatile",
-    "gemini": "gemini-2.0-flash",
+    "anthropic": "claude-sonnet-5",
+    "groq": "openai/gpt-oss-120b",
+    "gemini": "gemini-3.7-flash",
 }
 
 

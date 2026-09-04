@@ -39,12 +39,12 @@ async function api(path){
 async function askLLM(messages, system){
   const attempts = [];
   for(const provider of PROVIDER_ORDER){
-    for(const key of Settings.keys(provider)) attempts.push({ provider, key });
+    Settings.keys(provider).forEach((key, i) => attempts.push({ provider, key, n: i + 1 }));
   }
   if(!attempts.length) throw Object.assign(new Error('no_key'), { code:'no_key' });
 
-  let lastErr = null;
-  for(const { provider, key } of attempts){
+  const failures = []; // {provider, n, message} for every attempt that didn't work
+  for(const { provider, key, n } of attempts){
     try{
       const res = await fetch(Settings.apiBase + '/api/ask', {
         method:'POST',
@@ -53,15 +53,22 @@ async function askLLM(messages, system){
       });
       const data = await res.json().catch(()=>null);
       if(!res.ok){
-        lastErr = Object.assign(new Error((data && data.detail) || res.statusText), { status:res.status, provider });
+        failures.push({ provider, n, message: (data && data.detail) || res.statusText });
         continue;
       }
       return data.text;
     }catch(e){
-      lastErr = e;
+      failures.push({ provider, n, message: e.message || String(e) });
     }
   }
-  throw Object.assign(lastErr || new Error('all configured providers failed'), { code:'api_error' });
+  // Every configured key, on every configured provider, failed. Summarize
+  // ALL of them (not just the last) so it's visible that fallback really
+  // did run through every one, not that only one was ever tried.
+  const summary = failures.map(f => `${PROVIDER_LABEL[f.provider]} key #${f.n}: ${String(f.message).slice(0,160)}`).join('\n');
+  throw Object.assign(
+    new Error(`Tried ${failures.length} key(s) across ${new Set(failures.map(f=>f.provider)).size} provider(s), all failed:\n${summary}`),
+    { code:'api_error', failures },
+  );
 }
 
 let backendState = 'pending'; // pending | ok | bad
