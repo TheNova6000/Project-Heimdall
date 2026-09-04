@@ -70,6 +70,24 @@ here, in miniature, in one domain at a time:
   into the real action-execution loop, and `FUTURE_ARCHITECTURE.md`'s
   own "C — Computational uncertainty" upgrade already names the same
   principle for investigation findings.
+- **§24, the Verification Engine** — unlike the entries above (existing
+  precedent this document generalizes), this one is no longer only
+  named in the vision: `financial_system/verification/` is a real,
+  running, additive-only instance of it, built independent of Risk/
+  Recovery/Controller's own decision code. Four of the section's eleven
+  named properties are checked for real, against real verdicts, from
+  both the real Heimdall dataset and a bridged `Simulation/` (Truman)
+  run: replay correctness (rebuilding the real financial state store
+  twice, byte-identical), temporal integrity (auditing Risk's real
+  as-of mechanism — 0 boundary violations across the full real and
+  bridged corpora, plus one real, separately-diagnosed raw-data
+  timestamp finding named, not hidden, in
+  `financial_system/verification/README.md`), evidence grounding
+  (zero dangling evidence ids across all three domains, both sources),
+  and idempotency (byte-identical `AgentVerdict` output on repeat
+  calls). See `financial_system/verification/README.md` for the full
+  real numbers and the honest list of what the other seven properties
+  would still take to build.
 
 The pattern across all of these: every one was built small, in one
 place, verified before moving on — never the other way around. That's
