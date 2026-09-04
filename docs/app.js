@@ -110,11 +110,28 @@ const pages = [
 
 function renderNav(){
   const nav = document.getElementById('nav');
+  const toggle = document.getElementById('nav-toggle');
   nav.innerHTML = pages.map(p=>`<button data-page="${p.id}">${p.label}</button>`).join('');
   nav.addEventListener('click', e=>{
     const b = e.target.closest('button[data-page]');
-    if(b) go(b.dataset.page);
+    if(b){ go(b.dataset.page); closeNav(); }
   });
+  toggle.addEventListener('click', e=>{
+    e.stopPropagation();
+    nav.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', nav.classList.contains('open') ? 'true' : 'false');
+  });
+  document.addEventListener('click', e=>{
+    if(nav.classList.contains('open') && !nav.contains(e.target) && e.target !== toggle) closeNav();
+  });
+  document.addEventListener('keydown', e=>{
+    if(e.key === 'Escape') closeNav();
+  });
+}
+
+function closeNav(){
+  document.getElementById('nav').classList.remove('open');
+  document.getElementById('nav-toggle').setAttribute('aria-expanded', 'false');
 }
 
 let liveInited = false;
@@ -123,6 +140,8 @@ function go(id){
   document.querySelectorAll('#nav button').forEach(b=>{
     if(b.dataset.page===id) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
   });
+  const current = pages.find(p => p.id === id);
+  if(current) document.getElementById('nav-current').textContent = current.label;
   window.scrollTo({top:0, behavior:'instant'});
   try{ localStorage.setItem('hb-page', id); }catch(e){}
   if(id === 'live' && !liveInited){ liveInited = true; initLivePage(); }
