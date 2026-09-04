@@ -507,14 +507,14 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="SETTLEMENT_DELAY_T_PLUS_1",
-    location="world/engine.py:628 (SimulationEngine._run_settlement; the T+1 delay is implicit in the "
+    location="world/engine.py:638 (SimulationEngine._run_settlement; the T+1 delay is implicit in the "
     "method's full-daily-sweep ordering -- not a standalone named numeric constant)",
     value="1 simulated day (T+1) -- structural, from _run_one_day() calling _run_settlement() once per "
     "tick before that day's purchases can add anything new to a pending account",
     provenance_type="research-grounded",
     status="implemented",
     source=(
-        "world/engine.py's _run_settlement docstring (lines 633-664), Phase 3 update per Research.md Part B: "
+        "world/engine.py's _run_settlement docstring (lines 643-674), Phase 3 update per Research.md Part B: "
         "'RESEARCH-GROUNDED, WITH A NAMED SIMPLIFICATION ... Real card-network settlement is consistently "
         "reported, across multiple independent industry sources, to take on the order of one to three "
         "business days after a transaction: Stripe's own public documentation states \"settlement typically "
@@ -545,13 +545,13 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="SETTLEMENT_BATCH_HOUR_UTC",
-    location="world/engine.py:688 (self.clock.timestamp(hour=3, minute=0, second=0), inside "
+    location="world/engine.py:698 (self.clock.timestamp(hour=3, minute=0, second=0), inside "
     "_run_settlement; not a standalone module-level constant)",
     value="hour=3, minute=0, second=0 (03:00 UTC)",
     provenance_type="modeling-assumption",
     status="implemented",
     source=(
-        "world/engine.py's _run_settlement docstring (lines 674-679): 'A fixed batch time (03:00 UTC), not "
+        "world/engine.py's _run_settlement docstring (lines 684-689): 'A fixed batch time (03:00 UTC), not "
         "RNG-sampled: settlement is a systemic process run once a day, not an individual agent's "
         "probabilistic decision (contrast _event_timestamp() below), so this draws no randomness and cannot "
         "itself be a source of nondeterminism.' Memory.md's Phase 2 provenance table: 'Settlement batch "
@@ -563,13 +563,13 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="EVENT_TIMESTAMP_INTRADAY_HOUR_RANGE",
-    location="world/engine.py:986-993 (SimulationEngine._event_timestamp; hour=self.rng.randint(7, 22)); "
+    location="world/engine.py:1049-1056 (SimulationEngine._event_timestamp; hour=self.rng.randint(7, 22)); "
     "design-level statement of the same rule in world/clock.py:36-44 (SimClock.timestamp docstring)",
     value="hour uniform in [7, 22], minute uniform in [0, 59]",
     provenance_type="modeling-assumption",
     status="implemented",
     source=(
-        "world/engine.py lines 986-992: 'MODELING ASSUMPTION: intraday time-of-day is sampled uniformly "
+        "world/engine.py lines 1049-1055: 'MODELING ASSUMPTION: intraday time-of-day is sampled uniformly "
         "across a plausible \"awake\" window (7am-10pm UTC) purely so that multiple same-day events don't "
         "all share one identical timestamp. No claim is made about real payment-timing patterns (that is "
         "explicitly out of scope -- Phases.md Phase 4 territory). Drawn from the run's single seeded RNG, so "

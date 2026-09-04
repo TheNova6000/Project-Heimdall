@@ -311,6 +311,16 @@ class SimulationEngine:
         self.devices: list[Device] = []
         self.person_device: dict[str, str] = {}  # person_id -> device_id
 
+        # Live-Risk-loop support (new -- see "Live-loop support" section
+        # below and `block_device()`'s own docstring): a device_id lands in
+        # this set ONLY via an explicit `block_device()` call -- nothing in
+        # `_build_world()`/`run()`/`_run_one_day()` ever adds to it, so it
+        # is always empty for a normal run (confirmed by grep -- see
+        # `docs/Memory.md`'s entry for this addition). `_maybe_attempt_
+        # purchase()`'s own device-blocked check consults this set, and
+        # only this set.
+        self.blocked_devices: set[str] = set()
+
         self._build_world()
 
     # ------------------------------------------------------------------
@@ -916,6 +926,68 @@ class SimulationEngine:
 
         amount = person.purchase_amount(self.rng)
         merchant = self.rng.choice(self.merchants)
+
+        # Device: the payer's own device, or their household's shared
+        # device if that's who they transact from -- self.person_device
+        # already resolves to whichever one this person actually uses (see
+        # the device-assignment pass in _build_world). A purchase attempt
+        # is the one place in this simulation a person genuinely "uses a
+        # device" -- see world/models.py's Transaction docstring for why
+        # every other Transaction kind leaves device_id blank. Resolved
+        # here, before the transfer is attempted, purely so the
+        # device-blocked check immediately below can run before any money
+        # actually moves -- this dict lookup draws no randomness, so
+        # moving it earlier cannot perturb the RNG-draw sequence a normal
+        # run already depends on.
+        device_id = self.person_device[person.person_id]
+
+        # Live-Risk-loop support (new -- see block_device()'s own
+        # docstring and engine.py's "Live-loop support" section below):
+        # ONE surgical, clearly-commented conditional, and the ONLY place
+        # existing purchase logic is touched by this addition. This is a
+        # PROVABLE no-op on a normal run(): self.blocked_devices is only
+        # ever populated by an explicit block_device() call (see its own
+        # docstring), which nothing in _build_world()/run()/_run_one_day()
+        # ever makes (confirmed by grep) -- so on a normal run this `if`
+        # is always False and every line below it (the ordinary post_
+        # transfer/_record path) executes exactly as it did before this
+        # addition, byte-for-byte. Only an external, opt-in orchestrator
+        # (financial_system/bridges/live_risk_loop.py) ever calls
+        # block_device(), and only after evaluating a REAL Heimdall Risk
+        # verdict -- see that module's own docstring.
+        #
+        # When it DOES fire (live-Risk-loop mode only): the purchase is
+        # mechanically prevented -- post_transfer() is never even called,
+        # so no money moves and no ledger entry is posted -- and recorded
+        # as a real payment_failure, reusing the SAME Transaction kind an
+        # ordinary insufficient-funds failure uses (Heimdall's own real
+        # FAILURE_TAXONOMY, financial_system/recovery/signals.py, already
+        # names a `risk_block` category for exactly this situation -- a
+        # payment failing because Risk blocked it, not because the payer's
+        # balance was short), distinguished honestly via the Event's own
+        # `payload` JSON (`blocked_device: true`, following the
+        # `retried_from` precedent below -- see `_record()`'s own comment
+        # for exactly why this is not a new required Transaction field)
+        # and a distinct `event_type` (`purchase_blocked_device`, not
+        # `purchase_failed`).
+        if device_id in self.blocked_devices:
+            timestamp = self._event_timestamp()
+            balance_before = bank.balance_of(account_id)
+            txn_id = self.ids.next_txn_id()
+            self._record(
+                transaction_id=txn_id,
+                kind="payment_failure",
+                timestamp=timestamp,
+                from_id=person.person_id,
+                to_id=merchant.merchant_id,
+                amount=amount,
+                balance_before=balance_before,
+                event_type="purchase_blocked_device",
+                device_id=device_id,
+                blocked_device=True,
+            )
+            return
+
         # Phase 2: purchase proceeds land in the merchant's PENDING
         # account, not their spendable one directly -- see
         # _run_settlement and world/agents/merchant.py.
@@ -936,15 +1008,6 @@ class SimulationEngine:
             entry_ids=self._new_entry_pair(),
             transaction_id=txn_id,
         )
-
-        # Device: the payer's own device, or their household's shared
-        # device if that's who they transact from -- self.person_device
-        # already resolves to whichever one this person actually uses (see
-        # the device-assignment pass in _build_world). A purchase attempt
-        # is the one place in this simulation a person genuinely "uses a
-        # device" -- see world/models.py's Transaction docstring for why
-        # every other Transaction kind leaves device_id blank.
-        device_id = self.person_device[person.person_id]
 
         if succeeded:
             self._record(
@@ -1008,6 +1071,7 @@ class SimulationEngine:
         event_type: str,
         device_id: str = "",
         retried_from: str = "",
+        blocked_device: bool = False,
     ) -> None:
         # Phase 2: transaction_id is now generated by the caller (before
         # this is invoked), not here -- callers need the id up front to
@@ -1035,6 +1099,13 @@ class SimulationEngine:
         # row where it doesn't apply -- the key is only ever added to the
         # dict when a caller actually passes retried_from (only
         # attempt_retry() does).
+        #
+        # blocked_device (new -- see block_device() and _maybe_attempt_
+        # purchase()'s own device-blocked check above for why) follows the
+        # EXACT same discipline: defaults to False, never touches the
+        # Transaction dataclass, only ever added to the Event's own
+        # `payload` JSON when a caller actually passes blocked_device=True
+        # (only _maybe_attempt_purchase()'s device-blocked branch does).
         txn = Transaction(
             transaction_id=transaction_id,
             timestamp=timestamp,
@@ -1060,6 +1131,8 @@ class SimulationEngine:
         }
         if retried_from:
             payload_fields["retried_from"] = retried_from
+        if blocked_device:
+            payload_fields["blocked_device"] = True
         payload = json.dumps(payload_fields, sort_keys=True)
         self.events.append(
             Event(
@@ -1073,20 +1146,31 @@ class SimulationEngine:
 
     # ------------------------------------------------------------------
     # Live-loop support -- ADDITIVE, OPT-IN methods only. Nothing in run()/
-    # _run_one_day()/any other existing engine method calls any of the three
-    # methods below (confirmed by grep -- see docs/Memory.md's entry for
-    # this addition); a normal `run()` / `run_simulation.py` invocation's
+    # _run_one_day()/any other existing engine method calls any of the four
+    # methods below (confirmed by grep -- see docs/Memory.md's entries for
+    # these additions); a normal `run()` / `run_simulation.py` invocation's
     # control flow and RNG-draw sequence are completely unaffected by their
-    # existence. They exist so an external, opt-in orchestrator (
-    # financial_system/bridges/live_recovery_loop.py -- it lives outside
-    # Simulation/ because it inherently straddles both systems, per this
-    # task's own design constraints) can step this engine day-by-day, take a
-    # real mid-run snapshot, and attempt a real, causally-determined retry
-    # of a specific earlier failed purchase -- see NORTH_STAR.md Working
-    # Section 23 for the scenario this implements ("Insufficient funds ->
-    # WAIT 24 HOURS -> RE-EVALUATE WORLD -> IF liquidity recovered ->
-    # retry"), now driven by Heimdall's real recovery_agent.run_recovery_
-    # for_payment() decision instead of a hardcoded rule.
+    # existence. They exist so an external, opt-in orchestrator can step
+    # this engine day-by-day and write a real action back into it:
+    #
+    # - financial_system/bridges/live_recovery_loop.py (first built) takes
+    #   a real mid-run snapshot and attempts a real, causally-determined
+    #   retry of a specific earlier failed purchase -- see NORTH_STAR.md
+    #   Working Section 23 ("Insufficient funds -> WAIT 24 HOURS ->
+    #   RE-EVALUATE WORLD -> IF liquidity recovered -> retry"), driven by
+    #   Heimdall's real recovery_agent.run_recovery_for_payment() decision
+    #   instead of a hardcoded rule. Uses run_one_tick()/snapshot()/
+    #   attempt_retry().
+    # - financial_system/bridges/live_risk_loop.py (later, separate task)
+    #   scores newly-active shared devices with Heimdall's real
+    #   risk_agent.run_risk_for_device() and, on a real REVIEW/HOLD
+    #   verdict, blocks that device for all future purchase attempts --
+    #   see block_device()'s own docstring and _maybe_attempt_purchase()'s
+    #   device-blocked check above. Uses run_one_tick()/snapshot()/
+    #   block_device().
+    #
+    # Both orchestrators live outside Simulation/ because they inherently
+    # straddle both systems, per this project's own design constraints.
     # ------------------------------------------------------------------
 
     def run_one_tick(self) -> None:
@@ -1215,3 +1299,69 @@ class SimulationEngine:
             retried_from=original_transaction_id,
         )
         return succeeded
+
+    def block_device(self, device_id: str, day: int | None = None) -> None:
+        """
+        ADDITIVE, dead code from run()'s own perspective (see this class's
+        "Live-loop support" section docstring above) -- marks `device_id`
+        BLOCKED: a REAL state change, consulted by `_maybe_attempt_
+        purchase()`'s own device-blocked check (see that method's own
+        comment for exactly where and how). Once blocked, EVERY future
+        purchase attempt from a person whose resolved device
+        (`self.person_device[person_id]`) is this `device_id` mechanically
+        fails -- `post_transfer()` is never even called for it, so no
+        money moves -- recorded as a `payment_failure` with a distinct,
+        honest `event_type`/payload marker (see `_maybe_attempt_
+        purchase()`'s comment). This is a REAL mechanical consequence, not
+        a cosmetic "would have blocked" log entry: `test_live_risk_loop.py`
+        proves it against real, traced purchase attempts, not just this
+        method's own state.
+
+        Idempotent on `self.blocked_devices` (a set -- blocking an
+        already-blocked device changes nothing there), though a new
+        `device_blocked` Event is still appended every call, honestly
+        recording every real decision that led to (or reaffirmed) this
+        device's blocked state. The external orchestrator
+        (financial_system/bridges/live_risk_loop.py) tracks which devices
+        it has already blocked itself and only calls this once per device
+        (see that module's own report) -- this method does not enforce
+        that on its own.
+
+        `day` is accepted only for the CALLER's own bookkeeping/assertions
+        -- exactly like `attempt_retry()`'s own `day` parameter above --
+        this method itself does not read or depend on it; the simulated
+        day this block is recorded on is always whatever day
+        `self.clock.day` actually is right now. `live_risk_loop.py` always
+        calls this AFTER that day's own `run_one_tick()` (the day's Risk
+        checkpoint runs once that day's real transaction stream is known),
+        so a block always takes effect starting the NEXT simulated day's
+        purchases -- never retroactively, and never against the very
+        attempts whose activity caused the REVIEW verdict in the first
+        place (NORTH_STAR.md's "no magical outcomes" rule, same spirit as
+        `attempt_retry()`'s own real-balance-at-a-later-point design).
+
+        Determinism: draws NO randomness at all -- unlike `attempt_retry()`'s
+        own `_event_timestamp()` call, the `device_blocked` Event below
+        uses a FIXED canonical timestamp (`self.clock.timestamp(hour=0,
+        minute=0, second=0)`), deliberately: a device block is a Risk-
+        system decision landing on a simulated day, not a person's own
+        randomly-timed activity, so it has no reason to consume
+        `self.rng`. This means `block_device()` can be called any number
+        of times, in any order, without perturbing `self.rng`'s own
+        draw sequence at all -- the ONLY thing that can ever perturb it is
+        the `_event_timestamp()` draws inside a device-blocked purchase
+        failure itself (`_maybe_attempt_purchase()`), which happen in the
+        SAME fixed per-person iteration order `_run_one_day()` already
+        uses for everything else (see that method's own docstring) --
+        never introduced by this method.
+        """
+        self.blocked_devices.add(device_id)
+        self.events.append(
+            Event(
+                event_id=self.ids.next_event_id(),
+                event_type="device_blocked",
+                subject_id=device_id,
+                occurred_at=self.clock.timestamp(hour=0, minute=0, second=0),
+                payload=json.dumps({"device_id": device_id, "day": self.clock.day}, sort_keys=True),
+            )
+        )

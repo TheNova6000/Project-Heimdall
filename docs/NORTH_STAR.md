@@ -154,6 +154,31 @@ here, in miniature, in one domain at a time:
   is too small to support a verdict. See `financial_system/bridges/
   README.md`'s "Drift detector" section for the full real numbers and the
   exact mechanism each check cites.
+- **§23's write-back loop, extended to a second domain: Risk now closes
+  its own loop too, alongside Recovery's.** The §23 entry above scoped
+  itself to Recovery only ("Risk and Controller closing their own
+  write-back loops the same way is real, unattempted future work") — a
+  later, separate task closed it for Risk. `financial_system/bridges/
+  live_risk_loop.py` drives the same real, running (small-population,
+  population=30) `Simulation/` world day-by-day and calls Heimdall's
+  real, unmodified `risk_agent.run_risk_for_device()` on every real
+  Device shared by >=2 Customers with new activity that day; for a real
+  REVIEW/HOLD verdict, the new, additive
+  `SimulationEngine.block_device()` method (`Simulation/world/engine.py`)
+  marks that device blocked, and a new, surgical check inside
+  `_maybe_attempt_purchase()` mechanically prevents every later purchase
+  attempt from it — never a log line. Real numbers from one
+  seed=42/population=30/days=90 run: 239 real Risk decisions (208
+  RELEASE, 31 REVIEW), 1 device blocked, 35 real purchase attempts
+  mechanically prevented afterward, all 35 of which had
+  `balance_before >= amount` (would genuinely have succeeded if not
+  blocked, per `world/agents/bank.py`'s own real `post_transfer()`
+  enforcement rule) — a real, traced causal effect, verified against an
+  actual counterfactual (unblocked) run of the same seed, not asserted;
+  see `Simulation/docs/Memory.md`'s "Live Risk loop" entry for the full
+  trace. Scope: Risk only — Controller closing its own write-back loop
+  the same way remains real, unattempted future work, same honesty
+  convention as every other entry on this list.
 
 The pattern across all of these: every one was built small, in one
 place, verified before moving on — never the other way around. That's

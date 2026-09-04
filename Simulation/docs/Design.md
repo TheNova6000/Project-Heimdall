@@ -39,6 +39,22 @@ would lose information.
   byte-identical-default-output requirement; `payload` is already this
   project's stated convention for "JSON only where a record's shape is
   genuinely nested," per this section's original text above).
+- **Device-blocked purchase failures (as of the live-risk-loop task,
+  `docs/Memory.md`'s entry for it) reuse `kind="payment_failure"` — no
+  new `kind` value.** Unlike a retry (a structurally different kind of
+  event), a device-blocked purchase attempt is still honestly "an
+  attempted purchase that failed," just with a different cause —
+  Heimdall's own real `FAILURE_TAXONOMY` already names a `risk_block`
+  category for exactly this situation. The distinct cause is carried at
+  the `Event` layer instead: a new `event_type` value
+  (`purchase_blocked_device`, never `purchase_failed`) and a
+  `blocked_device: true` key in the `Event.payload` JSON, added to
+  `_record()`'s existing optional-key mechanism the same way
+  `retried_from` was (above) — emitted only via
+  `SimulationEngine.block_device()`'s effect on
+  `_maybe_attempt_purchase()`, an additive, opt-in method never called
+  from `run()`/`_run_one_day()` (so it never appears in a normal
+  `run_simulation.py` invocation's output).
 
 ## Statistics/report output
 

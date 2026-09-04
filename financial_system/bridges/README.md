@@ -164,6 +164,216 @@ proceeds gap already names.
   live_recovery_loop --seed 42 --population 20 --banks 2 --merchants 4
   --days 90`), not required to exist for the code itself to work.
 
+## Live Risk loop (2026-09-04, later follow-on task -- closes the write-back gap for Risk)
+
+`financial_system/bridges/live_risk_loop.py` is a SEPARATE, ADDITIVE
+module (not a modification of `live_recovery_loop.py`, which remains
+exactly as described above) extending the SAME live-loop pattern to
+Risk: as Truman's world runs day by day, newly-active real Devices shared
+by >=2 distinct Customers get scored by Heimdall's real, unmodified
+`risk.risk_agent.run_risk_for_device()`, and a real REVIEW/HOLD verdict
+causes a real `SimulationEngine.block_device()` call -- every later
+purchase attempt from that device is then mechanically prevented by a
+new, surgical check inside `_maybe_attempt_purchase()`. Full design
+rationale, the exact determinism argument, and the full real-run numbers
+are written up in `Simulation/docs/Memory.md`'s "Live Risk loop" entry --
+this section is the short version.
+
+**How it works.** `run_live_risk_loop()` builds a fresh
+`SimulationEngine` and steps it one simulated day at a time via
+`run_one_tick()` (reused unmodified from the Recovery loop's own
+precedent). After EVERY day, it takes a real mid-run snapshot
+(`engine.snapshot()`), writes it via `run_simulation.py`'s own
+`write_output()`, and re-runs it through
+`simulation_bridge.transform_simulation_output()` +
+`financial_state.builder.build_financial_state()` +
+`entity_resolution.given_matches` + `financial_graph.builder.build_graph()`
+-- the exact same real, unmodified Heimdall functions the batch bridge
+and the Recovery live loop already call, reused as a library here too.
+Every real Device that is BOTH (a) shared by >=2 distinct Customers
+(`risk.runner.devices_with_sharers()`, Risk's own real eligibility rule --
+the only case its signals ever produce a nonzero score for) AND (b) had
+new purchase/payment_failure activity that simulated day gets a real
+decision from `risk_agent.run_risk_for_device(graph, device_id,
+investigate=False)`. Every REVIEW or HOLD verdict (Risk's own two
+non-RELEASE tiers -- `risk_agent.py`'s real `_TIER_DECISION` mapping)
+triggers a real `SimulationEngine.block_device()` call, which takes
+effect starting the NEXT simulated day's purchase attempts.
+
+**The block is a real mechanical consequence, not a log line.**
+`_maybe_attempt_purchase()` gains exactly ONE new, surgical,
+clearly-commented conditional: if the payer's resolved device
+(`self.person_device[person_id]`) is in `self.blocked_devices` (a set
+populated ONLY by `block_device()`), `post_transfer()` is never even
+called -- no money moves -- and the attempt is recorded as a real
+`payment_failure` (Heimdall's own real `FAILURE_TAXONOMY` already names a
+`risk_block` category for exactly this situation), with a distinct
+`event_type` (`purchase_blocked_device`, never `purchase_failed`) and a
+`blocked_device: true` `Event.payload` marker -- the SAME "payload key,
+not a new Transaction field" discipline `attempt_retry()`'s own
+`retried_from` established (see `Simulation/docs/Design.md`'s "Naming
+conventions" section). `self.blocked_devices` is empty on a normal run
+and is populated ONLY by an explicit `block_device()` call (confirmed by
+grep: nothing in `_build_world()`/`run()`/`_run_one_day()` ever calls
+it) -- so this conditional is PROVABLY a no-op on a normal run, exactly
+the same "dead-by-default" discipline `attempt_retry()`'s own addition
+established. `test_live_risk_loop.py::
+test_default_run_engine_flow_unaffected_by_blocked_devices_set` proves
+this from real output, both directly (`engine.blocked_devices == set()`
+after a plain `run()`, zero `purchase_blocked_device`/`device_blocked`
+events anywhere) and by cross-checking that a plain, never-blocked run
+and the live-risk-loop run produce byte-identical transaction history for
+the eventually-blocked device's owners, up to the day before the block
+took effect.
+
+**Does Risk ever call an LLM?** No, by construction -- the SAME finding,
+reached the SAME way, as the Recovery loop's own equivalent check: this
+loop's only call site passes `investigate=False` unconditionally, and
+`risk_agent.py`'s own `run_risk_for_device()` only ever calls
+Discovery.AI's `investigate_evidence()` when BOTH `investigate=True` AND
+`tier == "HIGH"` -- confirmed by reading the function directly, not
+assumed. `test_live_risk_loop.py::test_no_llm_calls_ever` proves this
+from real output (every decision's `investigation_confidence` is `None`).
+
+**Determinism.** Same seed + same config -> byte-identical output,
+including which devices get blocked, on what day, and every resulting
+blocked-purchase failure. The exact fixed ordering (devices scored sorted
+by `device_id`, intersected with a sorted set of that day's actually-active
+device_ids; `block_device()` calls happen after that day's own
+`run_one_tick()` and after that day's scoring loop, in the same fixed
+per-device order the scoring loop used; `block_device()` itself draws ZERO
+randomness -- a fixed canonical timestamp, deliberately, since a block is
+a systemic Risk decision, not a person's own randomly-timed activity) is
+documented in `block_device()`'s own docstring (`Simulation/world/
+engine.py`) and `Simulation/docs/Memory.md`. Proven by
+`test_live_risk_loop.py::test_determinism_two_runs_identical_reports` and
+`test_determinism_two_runs_byte_identical_world_output`, which diff the
+actual `transactions.csv`/`events.csv`/`persons.csv`/`devices.csv` bytes
+across two independent runs of the same seed.
+
+**Population/checkpoint choice.** Same small-canvas philosophy as the
+Recovery loop, but Risk needs a DIFFERENT thing from smallness: real
+household-shared Devices (`owner_person_ids` with >=2 entries -- the ONE
+legitimate sharing mechanism `Simulation/` models,
+`DEVICE_HOUSEHOLD_SHARING_FRACTION = 0.3`). A quick seed=42 sweep at the
+Recovery loop's own population=20 produced only 2 shared devices -- too
+thin to reliably produce a REVIEW verdict every run. population=30
+(same seed) reliably produces 5 shared devices, of which one (`dev_00000d`)
+reaches REVIEW (`decision_score` up to 0.31, climbing further with more
+history) well within a 90-day run -- the smallest population from that
+sweep (20/30/40/50 tested) that reliably clears "a few real shared
+devices AND at least one real REVIEW verdict", so this loop defaults to
+`population=30`, not `population=20` reused unmodified just because
+Recovery already used it. Checkpointing is every single simulated day,
+same choice and same reasoning as the Recovery loop (cheap at this scale,
+and the finest granularity that could possibly matter -- Risk's signals
+only change on a day a device had new activity, and this loop already
+only re-scores exactly those devices).
+
+### Real end-to-end run (verbatim, seed=42, population=30, banks=2, merchants=4, days=90)
+
+```
+wall-clock time: 158.29s (90 daily checkpoints)
+total transactions (final): 1468
+devices with >=2 owners (as of last checkpoint): 5
+Risk decisions made: 239  {'RELEASE': 208, 'REVIEW': 31}
+devices blocked: 1  ['dev_00000d']
+blocked purchase attempts (real, prevented): 35
+  of which would have SUCCEEDED if not blocked (balance_before >= amount): 35
+```
+
+`dev_00000d` (shared by `person_00016`/`person_00017`, a two-person
+household) crossed into REVIEW using cumulative history through around
+day 48 -- the block took effect starting day 49 and was never lifted
+(this loop has no unblock mechanic, matching Heimdall's own real Risk
+domain, which has no "un-review" action either). From day 49 through the
+end of the 90-day run, 35 real purchase attempts from that device were
+mechanically prevented -- **every single one** would have succeeded had
+the device not been blocked (`balance_before >= amount` on every one,
+`world/agents/bank.py`'s own real `post_transfer()` enforcement rule),
+confirming the block was genuinely consequential every time, not a
+no-op blocking of attempts that would have failed anyway.
+
+### Real, traced causal effect (one concrete example, verified not asserted)
+
+The block's first real consequence, traced end to end: on day 49,
+`person_00017` attempted a real purchase (`txn_00000328`, amount=41.62,
+`balance_before=2402.25`). In a REAL counterfactual run of the exact same
+seed/population/config with the live loop never involved at all (plain
+`SimulationEngine.run()`, `block_device()` never called -- confirmed
+identical up to this point, see below), this exact same transaction
+(same `transaction_id`, same `amount`, same `balance_before` --
+proving the two worlds are byte-identical up through day 48) actually
+SUCCEEDS: `person_00017`'s balance drops to `2360.63` (`2402.25 -
+41.62`), confirmed by their next recorded purchase's own
+`balance_before`. In the live-risk-loop run, the SAME attempt is instead
+blocked: `person_00017`'s balance stays at `2402.25` -- confirmed
+directly, not inferred, by their NEXT purchase attempt in the live-loop
+run (day 52, `txn_00000354`) recording `balance_before=2402.25`, exactly
+unchanged from day 49. This is a real, checkable causal claim, verified
+directly off both runs' own recorded numbers, not asserted: the block
+genuinely left `41.62` in `person_00017`'s account that a real,
+unblocked world would have spent.
+
+Beyond this point, the two runs' later transaction-id-level
+correspondence honestly breaks down -- not a determinism bug (the live
+loop's OWN seed-for-seed determinism holds exactly, proven above), but
+the expected, correct consequence of a REAL intervention: once
+`person_00016`/`person_00017`'s balances start diverging from the
+counterfactual (because their blocked purchases' money never left),
+their OWN later `wants_to_spend()` outcomes can flip relative to the
+counterfactual (a higher retained balance can change whether a
+probability-gated spend decision crosses its own threshold), which
+changes how many RNG draws THAT person's later daily attempts consume,
+which shifts the global monotonic transaction-id counter for every
+transaction created afterward, for everyone. This is `test_live_risk_loop.
+py::test_default_run_engine_flow_unaffected_by_blocked_devices_set`'s own
+documented scope: it proves byte-identical history up to the block point,
+not indefinitely after it -- exactly the same "no magical outcomes, real
+causal butterfly effects allowed" standard the Recovery loop's own
+retry-outcome section already established.
+
+### Honest scope
+
+Risk only -- Recovery is already done (a separate, untouched module);
+Controller reacting live is real future work. This loop does not call or
+interact with the Recovery live loop in any way -- running both
+simultaneously against the same world (so a device-blocked
+`payment_failure` could also reach Recovery, which would currently
+misclassify it as `insufficient_funds` via `simulation_bridge.py`'s own
+fixed `SIMULATION_FAILURE_REASON` constant, since that module is
+off-limits and unmodified by this task) is explicitly out of scope and
+not attempted. A blocked device is never unblocked -- matching Heimdall's
+own real Risk domain, which has no such action either. Only the
+Recovery-domain interaction above is a genuine, stated gap; every other
+scope boundary here mirrors the Recovery loop's own (RETRY_ALT_METHOD-
+style domain-specific caveats do not apply to Risk at all -- Risk's own
+decision surface is just RELEASE/REVIEW/HOLD, all three of which this
+loop already handles).
+
+### New files (this task)
+
+- `Simulation/world/engine.py` -- one new, additive method
+  (`SimulationEngine.block_device()`), a new optional `blocked_device`
+  parameter on the private `_record()` helper (threaded into the
+  `Event.payload` JSON, exactly like `attempt_retry()`'s own
+  `retried_from`), a new `self.blocked_devices` set (empty by default),
+  and ONE new surgical conditional inside `_maybe_attempt_purchase()`.
+  None of this is called anywhere in `run()`/`_run_one_day()` (confirmed
+  by grep) -- a normal `run_simulation.py` invocation's output is
+  byte-identical to before this task, seed for seed (verified: diffed a
+  full seed=42/population=300/banks=4/merchants=20/days=90 run against a
+  pre-task baseline of the same config, every file identical).
+- `financial_system/bridges/live_risk_loop.py` -- the live orchestrator.
+- `financial_system/bridges/test_live_risk_loop.py` -- 7 tests, all
+  passing (real-not-mocked, no-LLM, block-actually-prevents-a-purchase,
+  blocked-purchase-payload-traceability, two determinism tests, and a
+  plain-run-vs-live-loop causal cross-check).
+- `financial_system/bridges/live_risk_bridge_output/` -- one real
+  generated run's output (regenerable: `python -m financial_system.
+  bridges.live_risk_loop --seed 42 --population 30 --banks 2 --merchants 4
+  --days 90`), not required to exist for the code itself to work.
+
 ## Domain bridge registry (2026-09-04, later follow-on task)
 
 The three bridges below (Recovery, Risk, Controller) were each built as
