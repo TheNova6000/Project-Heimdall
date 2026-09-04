@@ -59,15 +59,16 @@ h1,h2,h3{font-weight:700; letter-spacing:-0.01em; text-wrap:balance;}
 
 /* ---------- top nav ---------- */
 .topbar{position:sticky; top:0; z-index:50; background:rgba(0,0,0,0.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--border);}
-.topbar-inner{display:flex; align-items:center; gap:32px; height:60px; max-width:1180px; margin:0 auto; padding:0 28px;}
-.brand{display:flex; align-items:center; gap:10px; font-size:15px; font-weight:700; letter-spacing:0.02em; white-space:nowrap;}
+.topbar-inner{display:flex; align-items:center; gap:20px; height:60px; max-width:1440px; margin:0 auto; padding:0 20px;}
+.brand{display:flex; align-items:center; gap:10px; font-size:15px; font-weight:700; letter-spacing:0.02em; white-space:nowrap; flex:none;}
 .brand-mark{width:18px; height:18px; flex:none;}
 .brand-beta{font-size:9.5px; font-weight:700; color:var(--hud); border:1px solid var(--hud-dim); border-radius:3px; padding:2px 5px; letter-spacing:0.08em;}
-.navlinks{display:flex; gap:2px; flex:1; overflow-x:auto;}
+.navlinks{display:flex; gap:0; flex:1; overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none;}
+.navlinks::-webkit-scrollbar{display:none;}
 .navlinks button{
-  font-family:var(--font-mono); font-weight:500; font-size:12.5px; color:var(--muted);
-  background:none; border:none; padding:8px 13px; cursor:pointer; white-space:nowrap;
-  text-transform:uppercase; letter-spacing:0.04em; border-bottom:1.5px solid transparent;
+  font-family:var(--font-mono); font-weight:500; font-size:11.5px; color:var(--muted);
+  background:none; border:none; padding:8px 9px; cursor:pointer; white-space:nowrap;
+  text-transform:uppercase; letter-spacing:0.03em; border-bottom:1.5px solid transparent;
   transition:color .15s, border-color .15s;
 }
 .navlinks button:hover{color:var(--text);}

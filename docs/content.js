@@ -663,6 +663,157 @@ function reportItem(r){
   </details>`;
 }
 
+function howItWorksHTML(){ return `
+<section class="hero" style="padding-top:44px; padding-bottom:8px;">
+  <div class="section-label">TECHNICAL REFERENCE<span class="line"></span></div>
+  <h2 class="sec-title">How Heimdall actually works</h2>
+  <p class="sec-sub" style="max-width:76ch;">This is a straight technical account of the running system &mdash; the real decision loop, the real evidence each domain reads, the real branches it can take, and the real limits it hits. Nothing here is aspirational; where something isn't built yet, it says so.</p>
+</section>
+
+<section>
+  <div class="section-label">01 &mdash; OVERVIEW<span class="line"></span></div>
+  <h2 class="sec-title">A world, not a row</h2>
+  <p class="sec-sub" style="max-width:76ch;">Heimdall doesn't score a payment as an isolated record. It reads a payment's current state and its real neighborhood in a graph, applies one of three small deterministic domains (Risk, Recovery, Controller), authorizes the result through a real policy engine, executes it through a real idempotent action lifecycle, and independently checks the outcome afterward. Discovery.AI is consulted only when deterministic evidence genuinely runs out, and its answer can never become the decision &mdash; a structural boundary, not a convention.</p>
+  <p class="sec-sub" style="max-width:76ch;">It is deliberately not a general financial AI and doesn't claim to be one. It's three narrow, auditable domains over one real graph, with a real system around them making sure a verdict becomes an authorized, executed, and verified action &mdash; see <a href="#" onclick="go('reports'); return false;">Reports</a> for exactly what's been proven and how.</p>
+</section>
+
+<section>
+  <div class="section-label">02 &mdash; THEORY<span class="line"></span></div>
+  <h2 class="sec-title">Why observe a world instead of scoring a row</h2>
+  <p class="sec-sub" style="max-width:76ch;">Before any of this was code, it was a conceptual answer to one question: how do you make a financial decision defensible? Not accurate on average &mdash; defensible, meaning a specific person could later ask "why did you do that," and get a specific, checkable answer.</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:10px;">// THE FULL LOOP</div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Financial world</span><span class="tag">Truman, or the real frozen dataset</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Event history &rarr; world state</span><span class="tag">every payment, settlement, device, instrument</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Observation</span><span class="tag">a graph query, scoped to what's knowable right now</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Intelligence (Risk / Recovery / Controller)</span><span class="tag">deterministic signals &rarr; a verdict</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Investigation, if evidence genuinely runs out</span><span class="tag">Discovery.AI, audit-only</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Economic evaluation</span><span class="tag">one Expected Value gate, Recovery only</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Policy</span><span class="tag">11 ordered rules authorize or refuse</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Action</span><span class="tag">idempotent, crash-safe execution</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Outcome</span><span class="tag">only the observed outcome mutates state</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Verification</span><span class="tag">an independent check, after the fact</span></div>
+    <div class="loop-stage" style="border:none;"><span class="dot"></span><span class="label">World update &rarr; re-observed next tick</span><span class="tag">no memory carried in code</span></div>
+  </div>
+  <p class="sec-sub" style="max-width:76ch; margin-top:16px;">The separation that actually matters is <b style="color:#fff;">world &ne; observation &ne; evidence &ne; decision &ne; action &ne; outcome</b>. Collapse any two of these and you lose the ability to answer "why" precisely: if observation and decision are the same step, you can't ask whether the decision used stale information; if action and outcome are the same step, you can't tell a request from what actually happened. Every real incident on this page (&sect;08) is a story about one of these boundaries being drawn in the wrong place, found, and fixed.</p>
+  <div class="panel" style="margin-top:16px;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:8px;">// THEORY VS. WHAT'S ACTUALLY LIVE</div>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">Real and tested today: Risk, Recovery, Controller, the Discovery.AI adapter, Policy, the Action lifecycle, the Orchestrator, Verification (4 of 11 named properties), Truman's causal simulation and live bridge, and the drift detector. Designed but not built: a general economic engine beyond one narrow EV gate, an autonomous research-to-world-extension loop, a universal world registry, a World/Knowledge/Evidence graph split, and multiple graph abstraction levels &mdash; the graph today is flat and single-level. None of the unbuilt items are implied as real anywhere else on this site.</p>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">03 &mdash; ARCHITECTURE<span class="line"></span></div>
+  <h2 class="sec-title">Nine real modules, each with one job</h2>
+  <p class="sec-sub" style="max-width:76ch;">No single module decides everything. Each owns exactly one responsibility, and only the Graph Interface touches the database directly.</p>
+  <div class="doclist">
+    <div class="docrow"><span class="path">Simulation/world/</span><span class="desc">Truman &mdash; the causal world. Zero knowledge Heimdall exists.</span></div>
+    <div class="docrow"><span class="path">financial_system/bridges/</span><span class="desc">One-directional adapter &mdash; batch and live. Never mutates Heimdall's frozen logic.</span></div>
+    <div class="docrow"><span class="path">financial_system/financial_graph/</span><span class="desc">The only code that queries the graph. A SQLite store, shaped like a future Neo4j one.</span></div>
+    <div class="docrow"><span class="path">financial_system/risk/ · recovery/ · reconciliation/</span><span class="desc">The three deterministic domains &mdash; signals in, a typed verdict out.</span></div>
+    <div class="docrow"><span class="path">financial_system/discovery_adapter/</span><span class="desc">The one narrow module touching Discovery.AI's internals. Audit-only, structurally.</span></div>
+    <div class="docrow"><span class="path">financial_system/recovery/expected_value.py</span><span class="desc">One real Expected Value gate &mdash; narrower than a general economic engine.</span></div>
+    <div class="docrow"><span class="path">financial_system/policy/</span><span class="desc">11 ordered rules, first match wins. No field for LLM confidence, by design.</span></div>
+    <div class="docrow"><span class="path">financial_system/action/</span><span class="desc">Idempotent execution. Only ActionOutcomeObserved ever mutates financial state.</span></div>
+    <div class="docrow"><span class="path">financial_system/orchestrator/ · verification/</span><span class="desc">Cross-domain conflict coordination, and an independent check afterward.</span></div>
+  </div>
+  <p style="font-size:11px; color:var(--muted-2); margin-top:14px;">The arrows in &sect;02's loop diagram are real, currently-wired call paths for the frozen dataset and for the live Truman bridge &mdash; not a target architecture. See <a href="#" onclick="go('system'); return false;">System</a> for Policy/Action/Orchestrator/Verification in full depth, and <a href="#" onclick="go('heimdall'); return false;">Heimdall</a> for each domain's real formula.</p>
+</section>
+
+<section>
+  <div class="section-label">04 &mdash; THE DECISION LOOP<span class="line"></span></div>
+  <h2 class="sec-title">One concrete run, start to finish</h2>
+  <p class="sec-sub" style="max-width:76ch;">A payment fails with <code>technical_failure</code>. Recovery classifies the category as recoverable and proposes a retry, scored at the category's own historical success rate. Policy authorizes it. Action executes it, exactly once. The gateway reports success; that becomes a durable, observed event &mdash; not something Action itself declared true. Verification later confirms the evidence behind that decision resolves to real graph nodes with no dangling ids. Recovery, asked about the <em>same payment</em> again from scratch, independently concludes there's nothing left to recover &mdash; it found out from the event log, not a special case written for this scenario.</p>
+  <div class="panel" style="margin-bottom:0;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--critical);"></span><span class="label">Payment failed</span><span class="tag">technical_failure, 85% category base rate</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--warn);"></span><span class="label">Recovery signals &rarr; decision</span><span class="tag">deterministic decline-code taxonomy</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--warn);"></span><span class="label">Policy</span><span class="tag">R3_RECOVERY_RETRY_ALLOW fires, score &ge; 0.5</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--good);"></span><span class="label">Action</span><span class="tag">ActionRequested &rarr; Started &rarr; OutcomeObserved</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--good);"></span><span class="label">Verification</span><span class="tag">evidence grounded, idempotency confirmed</span></div>
+    <div class="loop-stage" style="border:none;"><span class="dot" style="background:var(--good);"></span><span class="label">Fresh Recovery, asked again independently</span><span class="tag">correct, no special-case code</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">05 &mdash; EVIDENCE &amp; CONFIDENCE<span class="line"></span></div>
+  <h2 class="sec-title">Real evidence, scored honestly &mdash; including when confidence is high and still wrong to act on</h2>
+  <p class="sec-sub" style="max-width:76ch;">When Controller genuinely can't explain a settlement gap deterministically, Discovery.AI investigates &mdash; and the real, inspected result from this project's own held-out run is more interesting than a clean success story:</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="verdict-metric" style="border-top:none; padding-top:0;"><span class="k">Genuinely unexplainable cases investigated</span><span class="v">52 / 52</span></div>
+    <div class="verdict-metric"><span class="k">Average / peak LLM confidence on these cases</span><span class="v">0.82 avg &middot; up to 0.95</span></div>
+    <div class="verdict-metric"><span class="k">Cases where confidence flipped status to EXPLAINED</span><span class="v">0 / 52</span></div>
+    <div class="verdict-metric"><span class="k">Hallucination flags (a number cited but not grounded)</span><span class="v">0 / 52</span></div>
+    <p class="verdict-note">One real case, at 0.95 confidence, narrates: "no single transaction, fee, or combination of entries matches &mdash; this indicates either an unrecorded bank adjustment or a missing fee/charge not yet ingested." A plausible, well-reasoned, high-confidence explanation &mdash; and <code>result.status</code> stays UNEXPLAINED anyway, because the narrative never grounds to a specific retrievable ledger entry. This is the audit-only boundary working exactly as designed: confidence describes the narrative, it does not authorize a conclusion.</p>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">06 &mdash; STRUCTURAL DECISIONS<span class="line"></span></div>
+  <h2 class="sec-title">Never guess &mdash; exactly one branch applies</h2>
+  <p class="sec-sub" style="max-width:76ch;">Every domain's decision is a small, closed set of branches, not an open-ended judgment call. Recovery has 5 branches (DO_NOT_RETRY &times;2, INVESTIGATE, ESCALATE, RETRY). Risk has 3 tiers (RELEASE / REVIEW / HOLD). Controller has 4 (PASS / RESOLVE / REVIEW / INVESTIGATE). Policy sits above all three with 11 ordered rules, first match wins, ending in a catch-all (<code>R99_DEFAULT_REVIEW</code>) so nothing ever falls through ungoverned. See <a href="#" onclick="go('heimdall'); return false;">Heimdall</a> and <a href="#" onclick="go('system'); return false;">System</a> for every branch's real condition.</p>
+</section>
+
+<section>
+  <div class="section-label">07 &mdash; TYPED RELATIONSHIPS<span class="line"></span></div>
+  <h2 class="sec-title">Every edge carries its own evidence chain</h2>
+  <p class="sec-sub" style="max-width:76ch;">The graph's real edges (<code>belongs_to</code>, <code>used_device</code>, <code>used_instrument</code>, <code>contains</code>, <code>deposited_as</code>, plus derived edges <code>generates</code>, <code>refunded_by</code>, <code>uses</code>, <code>deducts</code>) aren't inferred by an LLM at query time &mdash; they're built once, at graph-construction time, either from persisted entity-resolution matches or computed directly from the ledger, and every one carries a real <code>source_record_ids</code> chain back to the raw record it came from. Nothing in this graph is a relationship the system merely believes is probably true.</p>
+</section>
+
+<section>
+  <div class="section-label">08 &mdash; REAL INCIDENTS<span class="line"></span></div>
+  <h2 class="sec-title">Proving a boundary was drawn correctly, not assuming it</h2>
+  <div class="grid3">
+    <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+      <div class="loop-title" style="margin-bottom:8px;">// TEMPORAL LEAKAGE</div>
+      <p style="font-size:12px; color:var(--muted); line-height:1.65;">Risk's burst-window signals once scanned a device's FULL history, including transactions after the payment being scored. Found by auditing every verdict against an <code>as_of</code> cutoff; fixed by scoping every signal query to only what existed at decision time. Post-fix: 0 violations across 143 real + 2,583 bridged decisions.</p>
+    </div>
+    <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+      <div class="loop-title" style="margin-bottom:8px;">// TIMING BACKWARDS</div>
+      <p style="font-size:12px; color:var(--muted); line-height:1.65;">A replay test caught a decision's recorded "world state at the time" stamped <i>after</i> the action it authorized had run &mdash; a stored RETRY replayed back as DO_NOT_RETRY. Fixed by capturing the timestamp before reasoning runs, not after.</p>
+    </div>
+    <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+      <div class="loop-title" style="margin-bottom:8px;">// WHY VS. WHETHER</div>
+      <p style="font-size:12px; color:var(--muted); line-height:1.65;">After a successful retry, Recovery produced "unrecognized failure_reason=None" &mdash; it checked <i>why</i> a payment failed but never <i>whether</i> it still was. Fixed with a general status check that gives the same answer on attempt 1, 2, or 5.</p>
+    </div>
+  </div>
+  <p style="font-size:11.5px; color:var(--muted-2); margin-top:14px;">A fourth, non-bug story: an early accounting-boundary review claimed 19/610 settlements had a real gap. Tracing the actual implementation showed that 19 was exactly the count of already-known <code>duplicate_record</code> cases, not a new finding &mdash; corrected in the same document that made the original claim, the moment better evidence existed. Full technical detail on each: <a href="#" onclick="go('docs'); return false;">Documentation</a>.</p>
+</section>
+
+<section>
+  <div class="section-label">09 &mdash; RELIABILITY &amp; LIMITS<span class="line"></span></div>
+  <h2 class="sec-title">What this doesn't promise</h2>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <ul style="list-style:none; display:flex; flex-direction:column; gap:12px; margin:0; padding:0;">
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">Several real constants have no documented derivation.</b> Risk's 0.3/0.6 tier cutoffs, its 60-minute window's margin, Controller's &#8377;1.00 tolerance, and Discovery.AI's 3-step investigation budget are working values, not calibration results &mdash; stated on their own pages, not hidden here.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">Each domain investigates in isolation.</b> The Orchestrator merges verdicts and detects conflicts, but one domain's investigation still can't inform another's.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">The graph is flat, not multi-level.</b> One internal doc informally calls it a "Neo4j Knowledge Graph"; the real, shipped store is SQLite, by its own docstring's stated reason, with no Account/PaymentIntent/PaymentAttempt abstraction layer.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">The live Truman environment is small and ephemeral.</b> 20-50 people, resets to day 0 on server restart &mdash; not stress-tested at the batch bridge's larger scale.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6;"><b style="color:#fff;">Free-tier infrastructure is real infrastructure.</b> The backend can cold-start after inactivity; the BYOK chat depends on whichever provider's free tier hasn't been exhausted that day.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">10 &mdash; TECH STACK<span class="line"></span></div>
+  <h2 class="sec-title">What it actually runs on</h2>
+  <div class="doclist">
+    <div class="docrow"><span class="path">FastAPI</span><span class="desc">This site's backend &mdash; imports financial_system's real decision modules directly, no reimplementation.</span></div>
+    <div class="docrow"><span class="path">SQLite</span><span class="desc">The graph, financial state, and action stores &mdash; "Neo4j-shaped," not Neo4j.</span></div>
+    <div class="docrow"><span class="path">Groq &middot; Gemini &middot; Anthropic</span><span class="desc">BYOK fallback chain for the chat panel and Discovery.AI's investigation pass.</span></div>
+    <div class="docrow"><span class="path">Cytoscape.js</span><span class="desc">The real graph view on the Live System page &mdash; deterministic fcose layout.</span></div>
+    <div class="docrow"><span class="path">Vanilla JS / HTML / CSS</span><span class="desc">This entire frontend. No framework, no build step.</span></div>
+    <div class="docrow"><span class="path">GitHub Pages + Render</span><span class="desc">Static frontend, free-tier Python backend.</span></div>
+    <div class="docrow"><span class="path">pytest</span><span class="desc">70/70 Simulation tests, plus the Stage 3/4 action and provenance test suites.</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">11 &mdash; REPORTS<span class="line"></span></div>
+  <h2 class="sec-title">Every verification pass, in one log</h2>
+  <p class="sec-sub" style="max-width:76ch;">Everything claimed above is backed by a test that actually ran, not asserted from design intent. The full log &mdash; question, method, dataset, result, interpretation, limitations, conclusion, for all twelve &mdash; lives on its own page.</p>
+  <button class="btn btn-primary" onclick="go('reports')">OPEN THE REPORTS LOG &rarr;</button>
+</section>`; }
+
 function reportsHTML(){ return `
 <section class="hero" style="padding-top:48px; padding-bottom:20px;">
   <div class="section-label">REPORTS<span class="line"></span></div>
