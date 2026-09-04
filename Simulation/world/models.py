@@ -124,6 +124,16 @@ class Transaction:
     caused by the agent's own state, not drawn from an independent
     per-category coin flip. This is additive instrumentation, not a
     taxonomy expansion, so it does not conflict with Rules.md #9.
+
+    `device_id` (new -- see docs/Memory.md's "Device" section) is set
+    ONLY for a person-initiated transaction (`purchase`/`payment_failure`
+    -- the device the payer actually transacted from, resolved via
+    world/engine.py's `self.person_device`). Every other kind (`salary`,
+    `settlement`, `savings_sweep`, `household_sweep`, `org_funding`) is a
+    systemic/automatic money movement, not something a person taps a
+    device to do -- `device_id` is left as the empty string for those,
+    deliberately, rather than inventing a device-of-record for a
+    transaction no one is holding a device for.
     """
 
     transaction_id: str
@@ -134,6 +144,7 @@ class Transaction:
     amount: float
     kind: str  # salary | purchase | payment_failure
     balance_before: float
+    device_id: str = ""
 
 
 @dataclass
@@ -194,6 +205,39 @@ class Community:
     community_id: str
     household_ids: list[str]
     organization_ids: list[str]
+
+
+@dataclass
+class Device:
+    """
+    The device a Person transacts from (new -- see docs/Memory.md's
+    "Device" section for the full design rationale). Every Person is
+    linked to exactly one Device at world-generation time (world/engine.py's
+    device-assignment pass, run right after Household grouping) -- this
+    matches the real Heimdall schema's 1-payment-uses-1-device shape
+    (`financial_system/risk/signals.py` reads exactly this kind of
+    Device<->Customer linkage to compute its device-sharing risk signal).
+
+    Like Household/Organization/Community, Device is NOT a new
+    probabilistic decision-maker (Architecture.md's guiding principle:
+    "Person/Bank/Merchant are the only agents with probabilistic decision
+    logic") -- it is an ownership/identity structure. `owner_person_ids`
+    has exactly one entry for a personal device, or two-or-more for a
+    household's shared "primary" device -- the ONE legitimate sharing
+    mechanism this simulation models (see world/engine.py's
+    `DEVICE_HOUSEHOLD_SHARING_FRACTION` for its exact provenance). A
+    shared device's owners are always members of the same Household --
+    device sharing never crosses household boundaries, and no fraud-ring
+    or other cross-household sharing mechanism exists anywhere in this
+    simulation (explicitly out of scope; see docs/Research.md Part C.1 and
+    docs/Memory.md's "Device" section).
+    """
+
+    device_id: str
+    fingerprint: str  # deterministic, derived from device_id -- not a real
+    # hardware fingerprint algorithm, just a stand-in identity string
+    # (Simulation has no device-hardware model at all)
+    owner_person_ids: list[str]
 
 
 @dataclass

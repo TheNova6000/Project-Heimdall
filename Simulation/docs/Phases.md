@@ -88,6 +88,25 @@ Household's size distribution is an uncited, honestly-labeled guess, and
 Organization revenue funding is a one-time world-generation-time lump sum
 rather than a periodic stream).
 
+## Device — real device identity + household sharing (DONE, 2026-09-04)
+
+Built, outside the numbered Phase sequence (a follow-on task, not part of
+Phase 3+): a real `Device` entity (`world/models.py`), replacing the
+Heimdall bridge's previous one-fabricated-placeholder-per-person device.
+Every Person is linked to exactly one Device at world-generation time
+(`world/engine.py`, a new pass run right after Household grouping). The
+ONE legitimate sharing mechanism modeled: for each household with 2+
+members, its first member is the "primary" device holder, and each other
+member independently has a 30% chance (`DEVICE_HOUSEHOLD_SHARING_
+FRACTION`, a named MODELING ASSUMPTION) of sharing that same device
+instead of getting their own. No fraud-ring or cross-household sharing
+mechanism was added — explicitly out of scope, per `docs/Research.md`
+Part C.1 and this task's own instructions. Every purchase/payment_failure
+Transaction now carries the payer's real `device_id`; `run_simulation.py`
+writes a new `devices.csv`. 53 tests passing (45 prior + 8 new,
+`tests/test_device.py`). See `docs/Memory.md`'s "Device" section for full
+design rationale, provenance, and the Heimdall-bridge motivation.
+
 ## Phase 3 — Behavioral realism (NOT STARTED)
 
 Replace Phase 1's placeholder/assumption-labeled probability rules

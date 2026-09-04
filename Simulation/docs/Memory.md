@@ -1238,3 +1238,216 @@ self-check, hardcoding the original dataset's path instead of using the
 `raw_dir` it was actually called with), and a real end-to-end run's
 verbatim output live in `financial_system/bridges/README.md`.
 
+---
+
+# Device — real device identity + household sharing (2026-09-04)
+
+## Status: built, run, and tested. Working.
+
+A later, explicit, user-requested follow-on task to the Heimdall bridge
+above. That bridge's own README named its gap #1 precisely: Risk
+(`financial_system/risk/`) could never be meaningfully bridged because
+`Simulation/` had no Device concept at all, so the bridge fabricated one
+placeholder Device per Person with zero signal — `risk/runner.py`'s
+`devices_with_sharers()` (real logic, read directly, not guessed) only
+ever produces a nonzero score for a Device shared by >=2 distinct
+Customers, which a one-placeholder-per-person fabrication can never
+produce. This task gives `Simulation/` a real `Device` entity so that gap
+can close.
+
+All docs (`PRD.md`, `Architecture.md`, `Rules.md`, `Phases.md`, `Design.md`,
+this file) were re-read in full before touching any code, then the real
+Risk logic (`financial_system/risk/runner.py`, `risk_agent.py`,
+`signals.py`) and the real graph-building code that derives the
+Customer-`uses`-Device edge (`financial_system/financial_graph/builder.py`,
+`entity_resolution/given_matches.py`) were read directly to confirm
+exactly what signal Risk needs: a `devices.csv`/`payments.csv` shape where
+some `device_id` values appear on payments from >=2 different
+`customer_id`s. Baseline confirmed first: 45/45 Simulation tests passing,
+and `financial_system`'s frozen baselines (Risk 100.0%/96.3%/0.0%,
+Recovery 87/87/39.6%) reproduced exactly via the canonical Phase
+1->2->3 sequence (`build_financial_state()` -> `run_phase2()` ->
+`build_graph()`, per `financial_system/demo.py`'s `setup()`) before any
+change was made anywhere.
+
+## What changed in code (Simulation/ side)
+
+```
+world/models.py     + Device dataclass (device_id, fingerprint,
+                     owner_person_ids: list[str] -- one entry for a
+                     personal device, 2+ for a household's shared
+                     "primary" device). Transaction gains one new field,
+                     device_id: str = "" -- set for purchase/
+                     payment_failure only (the one Transaction kind a
+                     person genuinely "uses a device" for); every other
+                     kind (salary/settlement/savings_sweep/household_
+                     sweep/org_funding) leaves it blank, deliberately,
+                     rather than inventing a device-of-record for a
+                     systemic money movement nobody is holding a device
+                     for.
+world/engine.py     New DEVICE_HOUSEHOLD_SHARING_FRACTION constant (see
+                     below). _IdCounters gains next_device_id() (dev_
+                     <hex>, same convention as every other id). New
+                     self.devices / self.person_device registries. A new
+                     device-assignment pass in _build_world, run as its
+                     own SEPARATE pass right after Household grouping
+                     (same reasoning Phase 2.5 used for Household's own
+                     separate pass: it genuinely needs Household
+                     membership to exist yet, and keeping it out of the
+                     main per-person loop means it cannot perturb the
+                     RNG draw sequence that loop's existing outcomes
+                     depend on) and before Community grouping.
+                     _maybe_attempt_purchase now resolves
+                     self.person_device[person.person_id] and passes it
+                     as device_id on both the success and failure
+                     _record() calls. SimulationResult gains `devices`.
+run_simulation.py   transactions.csv gains a device_id column. New
+                     devices.csv (device_id, owner_person_ids -- JSON
+                     array string, same convention as households.csv's
+                     person_ids -- fingerprint).
+tests/test_engine.py  test_transaction_fields_well_formed extended:
+                     purchase/purchase-originated payment_failure rows
+                     must have a real, correctly-resolved device_id;
+                     every other kind (including an Organization-payroll
+                     payment_failure) must have device_id == "". CSV
+                     determinism filename list and the well-formed-CSV
+                     column-set test both extended.
+tests/test_device.py  NEW. 8 tests (see "Testing" below).
+```
+
+`docs/PRD.md`, `docs/Architecture.md`, `docs/Rules.md`, `docs/Design.md`,
+and `docs/Research.md` were NOT modified — no factual inconsistency was
+found in any of them during this work.
+
+## The device-sharing mechanism, exactly
+
+For every Household with 2+ members (Household itself is unchanged,
+Phase 2.5's existing structure): its first member (household-membership
+list order — arbitrary, deterministic, spends no RNG draw of its own) is
+the "primary" device holder. Every OTHER member of that household
+independently draws `rng.random() < DEVICE_HOUSEHOLD_SHARING_FRACTION`;
+if true, they share the primary's device; if false, they get a brand-new
+personal device (`owner_person_ids == [that one person]`). A single-
+person household has no "other member" to draw for, so it deterministically
+ends up with one personal device — a harmless degenerate case of the same
+rule, not a special case (identical pattern to Phase 2.5's Household
+size-1 handling).
+
+**Constant**: `DEVICE_HOUSEHOLD_SHARING_FRACTION = 0.3`. MODELING
+ASSUMPTION — not derived from any real device-sharing survey (that would
+need its own dedicated research pass, out of this task's scope, same
+judgment call Phase 2.5 made for `HOUSEHOLD_SIZE_WEIGHTS`). Chosen as a
+defensible minority-but-substantial fraction: real multi-person households
+commonly do have one shared device (a family tablet/computer used for
+online purchases) alongside individual phones, but most members still
+mostly transact from their own — 30% keeps sharing a real, observable
+minority pattern in the output (see "Real numbers" below) rather than
+either the dominant case or a vanishingly rare one that would make the
+mechanism untestable. Same "round, defensible, honestly uncited" style as
+`ORG_MEMBERSHIP_FRACTION`/`SAVINGS_SWEEP_FRACTION`.
+
+**Explicitly NOT built** (per this task's hard scope boundary): no
+fraud-ring mechanism, no `is_fraud` flag, no cross-household device
+sharing, nothing that fabricates a fraud signal. `docs/Research.md` Part
+C.1 already covers why a fraud mechanism stays design-only. If Heimdall's
+Risk logic finds zero fraud rings when bridged against this honest data,
+that is the CORRECT and expected result, not a gap to fix here.
+
+## Real numbers from this session's example run
+
+seed=42, 500 persons, 3 banks, 15 merchants, 120 days (same parameters as
+every prior phase's own canonical example): 414 devices total for 500
+persons — 340 personal (1 owner), 64 shared by 2, 8 shared by 3, 2 shared
+by 4 (household sizes cap at 4, per `HOUSEHOLD_SIZE_WEIGHTS`). 500/500
+persons covered by exactly one device (checked programmatically, not by
+eye).
+
+## Testing — what's actually verified, not just claimed
+
+`tests/test_device.py`, 8 new tests, all passing (53 total across the
+whole suite, 45 prior + 8 new):
+- **Every person has exactly one device, every device owner is a real
+  person_id** — checked by building the reverse (person -> device) map
+  from real output and confirming it's a bijection against `result.persons`.
+- **A shared device never crosses a household boundary** — for every
+  device with >=2 owners, all of its owners resolve to the SAME
+  `household_id`, checked directly against `result.households`, not
+  assumed from the assignment logic alone.
+- **No device lists the same owner twice** (a degenerate-data sanity
+  check).
+- **Sharing-fraction accuracy**: reconciles the ACTUAL observed fraction
+  of non-primary household members who ended up sharing their household's
+  device against `DEVICE_HOUSEHOLD_SHARING_FRACTION`, over a 2000-person
+  run (>500 eligible trials) — within a +/-0.05 statistical tolerance
+  band (this one is a genuine per-person Bernoulli draw, unlike the
+  Phase 2.5 sweep fractions, which are exact arithmetic splits of a fixed
+  amount and so could be checked with a much tighter `< 0.001` bound;
+  this test explains that distinction inline).
+- **Determinism**: same seed -> byte-identical `Device` list in memory,
+  and byte-identical `devices.csv`/`transactions.csv` at the CLI level;
+  different seeds -> different device assignment (sanity the RNG is
+  actually driving this, not silently ignored).
+
+`tests/test_engine.py`'s existing tests all still pass, with the two
+necessary, additive extensions named above (device_id shape/value checks
+in `test_transaction_fields_well_formed`; `devices.csv` added to the
+byte-identical-CSV determinism file list and the well-formed-columns set).
+
+**Full suite**: 53/53 passing (`python -m pytest tests/ -v`), verbatim
+output filed in the final report for this task.
+
+**CLI-level determinism** (this task's explicit ask, beyond pytest): ran
+`python run_simulation.py --seed 42 --population 500 --days 120` twice
+into separate directories, `diff -rq` between them — zero differences
+across all 12 output CSVs (the prior 10 plus `devices.csv`, and
+`transactions.csv`'s new `device_id` column), exit code 0. Both throwaway
+directories deleted after.
+
+## What's genuinely done vs. still rough
+
+**Done and solid**: a real Device entity with a real, honest, tested
+household-sharing mechanism; every purchase/payment_failure traceable to
+the real device it was made from; determinism extended through the new
+CSV and column; a bijective person<->device mapping proven on real output,
+not just claimed.
+
+**Rough / minimal by design, named plainly**:
+- `DEVICE_HOUSEHOLD_SHARING_FRACTION` is an honestly-labeled, uncited
+  assumption, same status as `HOUSEHOLD_SIZE_WEIGHTS` — a future session
+  could do the bounded research pass Phase 2.5 also left undone, if
+  device-sharing realism ever actually matters to a downstream use.
+- `fingerprint` is a deterministic placeholder string derived from
+  `device_id` (`fp_<device_id>`), not a real device-fingerprint algorithm
+  — `Simulation/` has no hardware/browser-fingerprinting model, and
+  building one was never in scope here; Heimdall's own Risk logic
+  (confirmed by reading `risk/signals.py`) never reads the fingerprint
+  field's content anyway, only the Device<->Customer sharing structure.
+- The primary-device-holder choice (household's first member, in list
+  order) is deterministic, not RNG-driven — an arbitrary, stated
+  simplification (a coin flip over "which member is primary" was judged
+  unnecessary complexity for a purely structural choice, same judgment
+  Phase 2.5 made for which bank a household's shared account opens at).
+- No fraud-ring, no cross-household sharing, no `is_fraud` flag — deliberately
+  out of scope, per this task's explicit instruction and
+  `docs/Research.md` Part C.1.
+
+## Part B — the Heimdall bridge, extended for Risk
+
+See `financial_system/bridges/README.md`'s updated field-mapping table
+and its "Risk" section for the full detail — summarized here since this
+task's brief asked for it to also be reflected in `Simulation/`'s own
+Memory: `financial_system/bridges/simulation_bridge.py` now builds
+`devices.csv`/`payment_instruments.csv` from `Simulation/`'s real `Device`
+data (one row per real Device, `payment_instruments.csv` staying a thin
+1:1 wrapper per Device since `Simulation/` still has no separate
+instrument concept — stated plainly, same honesty standard as before) and
+`payments.csv`'s `device_id` now comes from the real, bridged
+`transactions.csv: device_id` column instead of a fabricated
+`dev_bridge_<person_id>` placeholder. `financial_system/bridges/
+run_bridge.py` can now also call Heimdall's real, unmodified
+`financial_system/risk/runner.py` logic. The real end-to-end run's
+verbatim Risk output (and whether it found any shared-device signal at
+all, honestly reported either way) lives in
+`financial_system/bridges/README.md`, not duplicated here — this file's
+job is `Simulation/`'s own side of the change.
+

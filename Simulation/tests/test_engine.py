@@ -104,6 +104,7 @@ def test_same_seed_produces_byte_identical_csv_output():
             "households.csv",  # Phase 2.5
             "organizations.csv",  # Phase 2.5
             "communities.csv",  # Phase 2.5
+            "devices.csv",  # Device
         ):
             path_a = os.path.join(outdir_a, filename)
             path_b = os.path.join(outdir_b, filename)
@@ -179,6 +180,8 @@ def test_transaction_fields_well_formed():
     merchant_ids = {m.merchant_id for m in result.merchants}
     household_ids = {h.household_id for h in result.households}
     organization_ids = {o.organization_id for o in result.organizations}
+    device_ids = {d.device_id for d in result.devices}
+    person_device = {pid: d.device_id for d in result.devices for pid in d.owner_person_ids}
 
     assert result.transactions, "expected a non-trivial number of transactions"
 
@@ -226,9 +229,30 @@ def test_transaction_fields_well_formed():
                 f"{t.transaction_id} is a payment_failure with an unrecognized "
                 f"from_id/to_id shape: {t.from_id!r} -> {t.to_id!r}"
             )
+            if is_purchase_failure:
+                # Device: a purchase attempt (even a failed one) is made
+                # from the payer's own/household device -- see world/
+                # models.py's Transaction docstring.
+                assert t.device_id in device_ids
+                assert person_device[t.from_id] == t.device_id
+            else:
+                # An Organization payroll failure is not a person "using a
+                # device" at all -- device_id stays blank (same convention
+                # as salary/settlement/sweeps/org_funding below).
+                assert t.device_id == ""
         else:  # purchase
             assert t.from_id in person_ids
             assert t.to_id in merchant_ids
+            assert t.device_id in device_ids, f"{t.transaction_id} has unrecognized device_id {t.device_id!r}"
+            assert person_device[t.from_id] == t.device_id, (
+                f"{t.transaction_id}'s device_id {t.device_id!r} does not match "
+                f"{t.from_id}'s actual assigned device {person_device[t.from_id]!r}"
+            )
+        if t.kind in {"salary", "savings_sweep", "household_sweep", "settlement", "org_funding"}:
+            assert t.device_id == "", (
+                f"{t.transaction_id} (kind={t.kind}) is a systemic money movement, not a "
+                f"person using a device -- expected blank device_id, got {t.device_id!r}"
+            )
         # timestamp must be ISO 8601 parseable
         datetime.datetime.fromisoformat(t.timestamp)
 
@@ -258,6 +282,7 @@ def test_csv_output_is_well_formed_and_parseable():
             "amount",
             "kind",
             "balance_before",
+            "device_id",
         }
         assert expected_cols.issubset(rows[0].keys())
         for row in rows:

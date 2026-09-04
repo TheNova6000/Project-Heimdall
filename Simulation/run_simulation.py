@@ -230,7 +230,37 @@ def write_output(result: SimulationResult, outdir: str) -> None:
     _write_csv(
         os.path.join(outdir, "transactions.csv"),
         txn_rows,
-        ["transaction_id", "timestamp", "day", "from_id", "to_id", "amount", "kind", "balance_before"],
+        [
+            "transaction_id",
+            "timestamp",
+            "day",
+            "from_id",
+            "to_id",
+            "amount",
+            "kind",
+            "balance_before",
+            "device_id",
+        ],
+    )
+
+    # Device: one row per Device (device_id, its owning person_id(s) -- one
+    # or more if this is a household's shared "primary" device, otherwise
+    # exactly one -- and a fingerprint-equivalent field). owner_person_ids
+    # uses the same JSON-array-string convention as households.csv's
+    # person_ids / communities.csv's id lists (Design.md: "JSON only where
+    # a record's shape is genuinely nested").
+    device_rows = [
+        {
+            "device_id": d.device_id,
+            "owner_person_ids": json.dumps(d.owner_person_ids),
+            "fingerprint": d.fingerprint,
+        }
+        for d in result.devices
+    ]
+    _write_csv(
+        os.path.join(outdir, "devices.csv"),
+        device_rows,
+        ["device_id", "owner_person_ids", "fingerprint"],
     )
 
     event_rows = [dataclasses.asdict(e) for e in result.events]

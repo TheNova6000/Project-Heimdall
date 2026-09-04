@@ -47,7 +47,7 @@ from world.agents.bank import Bank, post_transfer
 from world.agents.merchant import MERCHANT_CATEGORIES, Merchant
 from world.agents.person import Person
 from world.clock import SimClock
-from world.models import Account, Community, Event, Household, Organization, Transaction
+from world.models import Account, Community, Device, Event, Household, Organization, Transaction
 
 # ---------------------------------------------------------------------------
 # Population-generation constants (Phase 1: creating a plausible starting
@@ -171,6 +171,37 @@ ORG_FUNDING_SAFETY_MULTIPLIER = 1.2
 # number, not derived from any real geographic/community-size data.
 NUM_COMMUNITIES = 5
 
+# ---------------------------------------------------------------------------
+# Device -- see docs/Memory.md's "Device" section for the full design
+# rationale. Every Person gets exactly one Device at world-generation time;
+# the ONE legitimate sharing mechanism modeled is a household's members
+# optionally sharing the household's "primary" device (see world/models.py's
+# Device docstring). This is deliberately NOT a fraud/ring mechanism -- no
+# is_fraud flag, no cross-household sharing, no fraud-driven device reuse
+# exists anywhere in this simulation (docs/Research.md Part C.1 already
+# covers why that stays out of scope as design-only).
+# ---------------------------------------------------------------------------
+
+# MODELING ASSUMPTION: for each household with 2+ members, one member (the
+# first, in household-membership order -- an arbitrary but deterministic
+# choice, not itself a probabilistic decision) is the household's "primary"
+# device holder. Every OTHER member of that household independently has a
+# 30% chance of transacting from that same shared primary device instead of
+# getting their own personal device. Chosen as a defensible minority-but-
+# substantial fraction: real multi-person households commonly do have one
+# shared device (a family tablet/computer used for online purchases)
+# alongside individual phones, but most members still mostly transact from
+# their OWN device -- 30% keeps sharing a real, observable minority pattern
+# rather than either the dominant case or a vanishingly rare one. This is
+# NOT derived from any real device-sharing survey (that would need its own
+# dedicated research pass, out of this task's scope) -- named honestly as an
+# uncited assumption, same style as ORG_MEMBERSHIP_FRACTION/SAVINGS_SWEEP_
+# FRACTION above. A single-person household (see HOUSEHOLD_SIZE_WEIGHTS)
+# has no "other member" to draw for, so it always ends up with exactly one
+# personal device -- a harmless degenerate case of the same rule, not a
+# special case.
+DEVICE_HOUSEHOLD_SHARING_FRACTION = 0.3
+
 
 @dataclass
 class SimulationResult:
@@ -182,6 +213,7 @@ class SimulationResult:
     households: list[Household]  # Phase 2.5
     organizations: list[Organization]  # Phase 2.5
     communities: list[Community]  # Phase 2.5
+    devices: list[Device]  # Device (see docs/Memory.md's "Device" section)
     accounts: list[Account]  # flattened across all banks, in creation order
     transactions: list[Transaction]
     events: list[Event]
@@ -197,10 +229,15 @@ class _IdCounters:
     ledger_entry: int = 0
     transaction: int = 0
     event: int = 0
+    device: int = 0
 
     def next_account_id(self) -> str:
         self.account += 1
         return f"acct_{self.account:06x}"
+
+    def next_device_id(self) -> str:
+        self.device += 1
+        return f"dev_{self.device:06x}"
 
     def next_ledger_id(self) -> str:
         self.ledger_entry += 1
@@ -266,6 +303,13 @@ class SimulationEngine:
         # (only present for the ORG_MEMBERSHIP_FRACTION of persons who
         # belong to one -- absent, not None, for everyone else)
         self.org_bank: dict[str, Bank] = {}  # organization_id -> its Bank
+
+        # Device: every person maps to exactly one device_id (their own, or
+        # their household's shared "primary" device -- see
+        # DEVICE_HOUSEHOLD_SHARING_FRACTION above and the device-assignment
+        # pass at the end of _build_world).
+        self.devices: list[Device] = []
+        self.person_device: dict[str, str] = {}  # person_id -> device_id
 
         self._build_world()
 
@@ -470,6 +514,57 @@ class SimulationEngine:
             self.households.append(household)
             self.household_by_id[household_id] = household
 
+        # Device: assign exactly one Device to every Person (docs/Memory.md's
+        # "Device" section). A SEPARATE pass, after Household grouping, for
+        # the same reason Household grouping is itself a separate pass from
+        # the main Person loop above: it genuinely needs Household membership
+        # to already exist, and keeping it out of the per-person loop means
+        # it cannot perturb the RNG draw sequence any earlier code already
+        # depends on. Iterates households in creation order, and each
+        # household's members in their existing (already-deterministic)
+        # list order, so this pass's own RNG draws happen in a fixed,
+        # seed-independent order every run.
+        #
+        # For each household: its first member is the "primary" device
+        # holder (arbitrary, deterministic -- no RNG spent choosing who).
+        # Every OTHER member independently has a DEVICE_HOUSEHOLD_SHARING_
+        # FRACTION chance of sharing that same primary device instead of
+        # getting their own. A member who does NOT share gets a fresh
+        # personal device (owner_person_ids == [that one person]). This is
+        # the ONLY device-sharing mechanism in this simulation -- no
+        # cross-household sharing, no fraud-ring mechanism, no is_fraud
+        # flag (explicitly out of scope, see DEVICE_HOUSEHOLD_SHARING_
+        # FRACTION's docstring above and docs/Research.md Part C.1).
+        for household in self.households:
+            members = household.person_ids
+            primary_id = members[0]
+            sharers = [primary_id]
+            for pid in members[1:]:
+                if self.rng.random() < DEVICE_HOUSEHOLD_SHARING_FRACTION:
+                    sharers.append(pid)
+
+            primary_device_id = self.ids.next_device_id()
+            primary_device = Device(
+                device_id=primary_device_id,
+                fingerprint=f"fp_{primary_device_id}",
+                owner_person_ids=list(sharers),
+            )
+            self.devices.append(primary_device)
+            for pid in sharers:
+                self.person_device[pid] = primary_device_id
+
+            for pid in members[1:]:
+                if pid in sharers:
+                    continue
+                own_device_id = self.ids.next_device_id()
+                own_device = Device(
+                    device_id=own_device_id,
+                    fingerprint=f"fp_{own_device_id}",
+                    owner_person_ids=[pid],
+                )
+                self.devices.append(own_device)
+                self.person_device[pid] = own_device_id
+
         # Phase 2.5 A.4: Communities -- a deliberately inert grouping of
         # Household/Organization ids into NUM_COMMUNITIES buckets,
         # round-robin by creation order. Pure structural bookkeeping, not a
@@ -507,6 +602,7 @@ class SimulationEngine:
             households=self.households,
             organizations=self.organizations,
             communities=self.communities,
+            devices=self.devices,
             accounts=accounts,
             transactions=self.transactions,
             events=self.events,
@@ -841,6 +937,15 @@ class SimulationEngine:
             transaction_id=txn_id,
         )
 
+        # Device: the payer's own device, or their household's shared
+        # device if that's who they transact from -- self.person_device
+        # already resolves to whichever one this person actually uses (see
+        # the device-assignment pass in _build_world). A purchase attempt
+        # is the one place in this simulation a person genuinely "uses a
+        # device" -- see world/models.py's Transaction docstring for why
+        # every other Transaction kind leaves device_id blank.
+        device_id = self.person_device[person.person_id]
+
         if succeeded:
             self._record(
                 transaction_id=txn_id,
@@ -851,6 +956,7 @@ class SimulationEngine:
                 amount=amount,
                 balance_before=balance_before,
                 event_type="purchase_succeeded",
+                device_id=device_id,
             )
         else:
             # THE mechanism this project exists to demonstrate: this
@@ -868,6 +974,7 @@ class SimulationEngine:
                 amount=amount,
                 balance_before=balance_before,
                 event_type="purchase_failed",
+                device_id=device_id,
             )
 
     # -- shared recording helpers --------------------------------------------
@@ -899,6 +1006,7 @@ class SimulationEngine:
         amount: float,
         balance_before: float,
         event_type: str,
+        device_id: str = "",
     ) -> None:
         # Phase 2: transaction_id is now generated by the caller (before
         # this is invoked), not here -- callers need the id up front to
@@ -906,6 +1014,10 @@ class SimulationEngine:
         # they post via world/agents/bank.py's primitives, so every
         # LedgerEntry can be traced back to the Transaction row that
         # caused it.
+        #
+        # device_id defaults to "" -- only _maybe_attempt_purchase passes a
+        # real one (see world/models.py's Transaction docstring for why
+        # every other kind is device-less).
         txn = Transaction(
             transaction_id=transaction_id,
             timestamp=timestamp,
@@ -915,6 +1027,7 @@ class SimulationEngine:
             amount=amount,
             kind=kind,
             balance_before=balance_before,
+            device_id=device_id,
         )
         self.transactions.append(txn)
 
