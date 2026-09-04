@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: heimdall-beta-api
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHONPATH
+        value: .
