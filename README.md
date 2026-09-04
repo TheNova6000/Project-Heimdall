@@ -270,6 +270,98 @@ honestly still untested (temporal-drift and class-imbalance robustness
 for Risk, cost-sensitive decisioning for Recovery). No implementation
 follows from it automatically.
 
+## Beyond the submission: Project Truman and a live bridge
+
+Everything above this section is the frozen, submitted system — unchanged
+since submission, its numbers reproducible by running the scripts above,
+verbatim. Everything below was built afterward as an explicit research
+extension and never touches the frozen code above: every task that built
+it was required to prove `git diff --stat` on `financial_system/risk/`,
+`recovery/`, `reconciliation/`, `financial_state/`, `financial_graph/`,
+`discovery_adapter/`, and `data/` was empty before being trusted, and
+Risk's 100.0%/96.3%/0.0% and Recovery's 87/87 (39.6%) baselines were
+re-verified, unchanged, after every single addition below — no exceptions.
+
+**`docs/NORTH_STAR.md`** records the long-term vision (Heimdall as a
+general financial-world substrate, not a payment-specific system) and,
+critically, tracks which parts of that vision are still just diagrams
+versus which are now real, working code — updated honestly as each piece
+below landed, not written once and left stale.
+
+**Project Truman** (`Simulation/`) is a from-scratch, self-contained,
+deterministic, agent-based financial world simulator — built to answer
+one specific problem: Heimdall's own synthetic-data generator produces
+failures from a per-category coin flip (`retry_would_succeed =
+random.random() < spec["retry_success_p"]`), with no connection to any
+customer's actual state. Truman's agents have real balances, incomes, and
+histories; failures emerge causally from that state. The headline
+result — bucketing purchase attempts by balance/income ratio produces a
+clean, monotonic 96%→0% failure-rate curve, reproduced across three
+seeds — is real evidence the approach works, not asserted. Full account,
+including the honest gaps (a measured spend/income-ratio mismatch against
+real BLS data, fraud/credit/loans designed but not built), in
+`Simulation/README.md` and `Simulation/docs/`.
+
+**The bridge** (`financial_system/bridges/`) connects the two, in stages:
+
+- A one-way, batch bridge runs a finished Truman world through Heimdall's
+  real, unmodified Recovery, Risk, and Controller code — all three domains,
+  real decisions on real (simulated) data, zero fabricated matches (e.g.
+  Risk finds zero fraud rings, honestly, because Truman doesn't simulate
+  fraud).
+- A **live** loop (`live_recovery_loop.py`) goes further: Heimdall's real
+  Recovery logic makes decisions *during* a running Truman world, and a
+  RETRY decision causes Truman to actually attempt a real retry against
+  the person's real, current balance — proven deterministic (two
+  independent runs, byte-identical, down to which retries were attempted
+  and their outcomes) and proven non-magical (a retry against an
+  insufficient balance honestly fails again).
+- A **drift detector** checks Heimdall's live decisions against Truman's
+  own *known* mechanisms (not assumptions — the real balance/income curve,
+  the exact device-sharing rate) — the one advantage a built simulator has
+  over a real dataset: the true generative process is known, so deviation
+  from it is diagnosable. It already found one real, statistically
+  significant case (p=2.6×10⁻⁶): Recovery's stated 0.45 confidence for
+  `insufficient_funds` didn't match Truman's realized 0% retry-success
+  rate — correctly traced to the live loop's fixed 1-day retry window
+  colliding with Truman's monthly-payday-only income model, not a flaw in
+  Heimdall's own logic.
+- A **verification engine**, a **domain registry** (a structured catalog
+  of which Heimdall domains are bridged and exactly what would be needed
+  to bridge fraud/credit/loans), and a **provenance catalog** (every
+  constant's research-grounded/modeling-assumption/placeholder status,
+  indexed and cross-checked against the real code) round out the
+  infrastructure — each is read-only or additive-only with respect to
+  Heimdall's decision logic.
+
+**Maturity level, stated honestly, the same standard as the Limitations
+section above:**
+
+- **Solid**: the causal mechanism itself, double-entry ledger correctness,
+  determinism (tested at every layer, including the live loop), the
+  zero-impact boundary against Heimdall's frozen code (proven, not
+  assumed, on every single addition).
+- **Real but small-scale**: the live loop has only been run and verified
+  against small populations (20–50 people) — not stress-tested at the
+  scale the batch bridge runs at (hundreds of people, thousands of
+  transactions).
+- **Genuinely uncalibrated**: most of Truman's specific constants are
+  labeled, honest modeling assumptions, not numbers verified against real
+  data — `Simulation/docs/Research.md` documents exactly which ones are
+  cited and which aren't, including numbers that looked tempting and were
+  deliberately rejected for failing verification.
+- **Not built at all**: fraud, credit scoring, and loan mechanics exist
+  only as cited design proposals (`Research.md` Part C); Controller has no
+  live loop yet (Risk's live loop is the next one in progress); the
+  registry/catalog tools are structured indexes maintained by explicit
+  human/agent decisions, not machine learning or autonomous discovery —
+  stated plainly in their own docs, not implied by the word "registry."
+
+In short: a real, verified proof that an agent-based simulation with
+causal structure can be built and safely wired into a live decision
+system without touching that system's own frozen logic — not a claim that
+the frozen system's capabilities have grown.
+
 ## Track
 
 Submitted under **AI Revenue Recovery**. **AI Finance Controller** and
