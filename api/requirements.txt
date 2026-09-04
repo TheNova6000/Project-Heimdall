@@ -2,3 +2,24 @@ fastapi==0.136.1
 uvicorn[standard]==0.46.0
 httpx==0.28.1
 pydantic==2.12.5
+
+# Only needed when a server-side LLM key is configured (see /api/investigate
+# in main.py) -- without one, investigate_evidence() degrades to its own
+# built-in "not executed" message and none of this is imported. Versions
+# below are pinned to exactly what was verified working end-to-end locally
+# (real decompose_steps, real narrative) against vendor/discovery-ai's
+# backend.questions.* -- deliberately NOT the vendor's own full
+# requirements.txt: neo4j/langgraph/asyncpg/pyjwt are that project's
+# graph-store/session/auth layers, none of which this narrow read-only path
+# (decide_next_step / gather_evidence / synthesize_answer with our own
+# FinancialStateRetriever, GroundAgent never instantiated) actually imports.
+python-dotenv==1.0.1
+aiosqlite==0.22.1
+instructor==1.16.0
+jsonref==1.1.0
+tavily-python==0.8.0
+curl_cffi==0.16.3
+google-genai==1.75.0
+groq==0.37.1
+cerebras_cloud_sdk==1.91.0
+eval_type_backport==0.4.0

@@ -23,10 +23,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from financial_system.discovery_adapter.investigate import investigate_evidence
+from financial_system.discovery_adapter.models import InvestigationRequest, InvestigationResult, InvestigationStatus
 from financial_system.financial_graph.repository import GraphRepository
 from financial_system.reconciliation.controller import run_controller_for_settlement
+from financial_system.reconciliation.deterministic import reconcile_settlement
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
+from financial_system.recovery.signals import compute_recovery_signals
 from financial_system.risk.risk_agent import run_risk_for_device
+from financial_system.risk.scoring import risk_tier, score_signals
+from financial_system.risk.signals import compute_device_risk_signals
 
 GRAPH_DB_PATH = Path(__file__).resolve().parent.parent / "financial_system" / "data" / "financial_graph.db"
 
@@ -164,6 +170,77 @@ def controller(settlement_id: str):
             raise HTTPException(404, f"{settlement_id} not found in financial_graph.db")
         verdict = run_controller_for_settlement(g, settlement_id, investigate=False)
         return json.loads(verdict.model_dump_json())
+    finally:
+        g.close()
+
+
+@app.get("/api/investigate/{subject_type}/{subject_id}")
+def investigate(subject_type: str, subject_id: str):
+    """Runs the REAL Discovery.AI investigation pass (investigate_evidence(),
+    unmodified vendor code -- genuine multi-step decide_next_step /
+    gather_evidence / synthesize_answer, not a scripted narrative) for the
+    given subject, but ONLY when the real domain agent would actually trigger
+    it: Recovery's unknown-category rule, Risk's HIGH-tier rule, Controller's
+    UNEXPLAINED rule -- each re-derived here from the same real signal
+    functions the agents themselves call, never guessed. If the deployment
+    has no server-side LLM key configured, this returns the SAME honest
+    'not executed' note investigate_evidence() already produces on its own --
+    it is not a separate failure path, just that function's real behavior."""
+    g = _graph()
+    try:
+        node = g.get_node(subject_id)
+        if not node:
+            raise HTTPException(404, f"{subject_id} not found in financial_graph.db")
+
+        request = InvestigationRequest(
+            subject_type=subject_type, subject_id=subject_id,
+            question_text=f"Explain {subject_type} {subject_id}.",
+        )
+
+        if subject_type == "Settlement":
+            fact = reconcile_settlement(g, subject_id)
+            if fact.status != "UNEXPLAINED":
+                return {"triggered": False,
+                        "reason": f"Controller's own status is {fact.status} -- Discovery.AI is only "
+                                  f"invoked when a settlement is genuinely UNEXPLAINED."}
+            prefilled = InvestigationResult(
+                request=request, status=InvestigationStatus.UNEXPLAINED,
+                expected_amount=str(fact.expected_amount),
+                actual_amount=str(fact.actual_amount) if fact.actual_amount is not None else None,
+                unexplained_amount=str(fact.unexplained_amount) if fact.unexplained_amount is not None else None,
+                facts=fact.facts, evidence=fact.evidence,
+            )
+        elif subject_type == "Device":
+            sig = compute_device_risk_signals(g, subject_id)
+            score, _ = score_signals(sig)
+            tier = risk_tier(score)
+            if tier != "HIGH":
+                return {"triggered": False,
+                        "reason": f"Risk's own tier is {tier} -- Discovery.AI is only invoked for a "
+                                  f"HIGH-tier device."}
+            prefilled = InvestigationResult(
+                request=request, status=InvestigationStatus.UNEXPLAINED,
+                facts=[f"device shared by {sig.n_sharers} customers"], evidence=sig.evidence,
+            )
+        elif subject_type == "Payment":
+            sig = compute_recovery_signals(g, subject_id)
+            if sig.known_category:
+                return {"triggered": False,
+                        "reason": f"Recovery already recognizes failure_reason={sig.failure_reason!r} -- "
+                                  f"Discovery.AI is only invoked for a genuinely unrecognized category."}
+            prefilled = InvestigationResult(
+                request=request, status=InvestigationStatus.UNEXPLAINED, evidence=sig.evidence,
+            )
+        else:
+            raise HTTPException(400, f"unsupported subject_type {subject_type!r}")
+
+        try:
+            result = investigate_evidence(request, prefilled, g)
+        except Exception as e:  # noqa: BLE001 -- a missing optional LLM dependency degrades, never 500s
+            return {"triggered": True,
+                    "result": json.loads(prefilled.model_dump_json()),
+                    "degraded_reason": f"4B raised {type(e).__name__}: {e}"}
+        return {"triggered": True, "result": json.loads(result.model_dump_json())}
     finally:
         g.close()
 
