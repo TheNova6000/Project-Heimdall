@@ -1451,3 +1451,30 @@ all, honestly reported either way) lives in
 `financial_system/bridges/README.md`, not duplicated here — this file's
 job is `Simulation/`'s own side of the change.
 
+## Part C — the Heimdall bridge, extended for Controller (2026-09-04)
+
+A later, explicit, user-requested follow-on task closed out the third and
+last Heimdall domain: Controller (settlement reconciliation). See
+`financial_system/bridges/README.md`'s "Part 3: Controller" section for
+the full field-mapping table, the real payment-grouping verification
+numbers, and the real end-to-end decision distribution — summarized here
+for the same reason Part B was: this file's job is `Simulation/`'s own
+side of the change, and that side is genuinely empty. `_run_settlement()`
+(`world/engine.py`), already documented above in this file's Phase 2
+section, turned out to need no change at all — its existing once-per-day,
+per-merchant, full-pending-balance sweep (`kind == "settlement"`,
+strictly T+1) already IS, structurally, a Heimdall Settlement batch.
+`financial_system/bridges/simulation_bridge.py` now maps each such
+transaction onto one real `Settlement` + one real `BankTransaction` row
+(honestly identical amounts — `Simulation/` simulates no banking
+discrepancy), and reconstructs `settlement_payments.csv` by finding that
+merchant's successful `purchase` transactions from the calendar day
+immediately before the settlement's own date — exactly the set
+`_run_settlement`'s own T+1 timing sweeps, confirmed against real bridged
+output (every settlement's assigned-payment sum matched its own amount
+exactly, 1770/1770, zero mismatches). `financial_system/bridges/
+run_bridge.py` now also calls Heimdall's real, unmodified
+`entity_resolution/bank_settlement_matcher.py` (Phase 2 step 6) and
+`reconciliation/controller.py` logic. `git diff --stat Simulation/` for
+this task is empty — no file under `Simulation/` was touched.
+

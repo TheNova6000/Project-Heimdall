@@ -84,6 +84,13 @@ def _make_fixture_sim_output(tmp: Path) -> Path:
                {"transaction_id": "txn_4", "timestamp": "2026-01-01T13:00:00+00:00", "day": "0",
                 "from_id": "person_00001", "to_id": "person_00001", "amount": "100.00",
                 "kind": "savings_sweep", "balance_before": "950.00", "device_id": ""},
+               # a settlement transaction the NEXT day (T+1), sweeping merchant_0001's
+               # pending balance -- exactly the sum of txn_1 (50.00) + txn_5 (30.00),
+               # the day-0 successful purchases, by construction (Truman's own
+               # full-sweep design -- see world/engine.py's _run_settlement docstring)
+               {"transaction_id": "txn_6", "timestamp": "2026-01-02T03:00:00+00:00", "day": "1",
+                "from_id": "pending:merchant_0001", "to_id": "merchant_0001", "amount": "80.00",
+                "kind": "settlement", "balance_before": "80.00", "device_id": ""},
            ])
     return sim_dir
 
@@ -95,7 +102,7 @@ def test_transform_counts_and_skips():
 
     assert report.persons_read == 3
     assert report.merchants_read == 1
-    assert report.transactions_read == 5
+    assert report.transactions_read == 6
     assert report.devices_read == 2
     assert report.orders_written == 3       # only purchase + payment_failure (txn_1, txn_2, txn_5)
     assert report.payments_written == 3
@@ -103,8 +110,59 @@ def test_transform_counts_and_skips():
     assert report.devices_written == 2      # real devices, direct from devices.csv
     assert report.shared_devices == 1       # dev_1, shared by person_00001 + person_00003
     assert report.instruments_written == 3  # one fabricated instrument per Person
+    assert report.settlements_written == 1       # txn_6
+    assert report.bank_transactions_written == 1
+    assert report.settlement_payments_written == 2  # txn_1 + txn_5, the day-0 purchases it swept
+    assert report.settlement_sum_check_mismatches == []
+    # "settlement" is handled separately now, not counted among skipped kinds.
     assert report.skipped_transaction_kinds == {"salary": 1, "savings_sweep": 1}
     print("test_transform_counts_and_skips: PASS")
+
+
+def test_settlement_bridging_and_payment_grouping():
+    """The one piece of real structural work in the Controller bridge task:
+    settlement_payments.csv must correctly reconstruct which successful
+    purchases a given settlement actually swept (that merchant's successful
+    purchases from the calendar day immediately before the settlement's own
+    date -- Truman's own T+1 timing, world/engine.py's _run_settlement)."""
+    sim_dir = _make_fixture_sim_output(FIXTURE_DIR)
+    out_dir = FIXTURE_DIR / "raw"
+    transform_simulation_output(sim_dir, out_dir)
+
+    with open(out_dir / "settlements.csv", newline="", encoding="utf-8") as f:
+        settlements = list(csv.DictReader(f))
+    with open(out_dir / "bank_transactions.csv", newline="", encoding="utf-8") as f:
+        bank_txns = list(csv.DictReader(f))
+    with open(out_dir / "settlement_payments.csv", newline="", encoding="utf-8") as f:
+        settlement_payments = list(csv.DictReader(f))
+
+    assert len(settlements) == 1
+    s = settlements[0]
+    assert s["settlement_id"] == "settle_bridge_txn_6"
+    assert s["merchant_id"] == "merchant_0001"
+    assert s["gross_amount"] == s["net_amount"] == "80.00"
+    assert s["fee_amount"] == "0" and s["tax_amount"] == "0"  # fabricated-zero, stated plainly
+
+    assert len(bank_txns) == 1
+    b = bank_txns[0]
+    assert b["amount"] == "80.00"  # honestly identical to net_amount -- no discrepancy simulated
+    assert b["value_date"] == s["settlement_date"]
+    # deterministic-description match: bank_settlement_matcher.py's SUFFIX_LEN=6
+    # window must find settlement_id's suffix inside this description.
+    assert s["settlement_id"][-6:] in b["description"]
+
+    pairs = {(r["settlement_id"], r["payment_id"]) for r in settlement_payments}
+    assert pairs == {
+        ("settle_bridge_txn_6", "pay_bridge_txn_1"),
+        ("settle_bridge_txn_6", "pay_bridge_txn_5"),
+    }
+    # the sum-matches-amount proof, done here directly against the CSVs
+    # (not just trusting the transform's own internal self-check).
+    with open(out_dir / "payments.csv", newline="", encoding="utf-8") as f:
+        payments_by_id = {r["payment_id"]: r for r in csv.DictReader(f)}
+    swept_sum = sum(float(payments_by_id[pid]["amount"]) for _, pid in pairs)
+    assert swept_sum == float(s["net_amount"]) == 80.00
+    print("test_settlement_bridging_and_payment_grouping: PASS")
 
 
 def test_status_and_failure_reason_mapping():
@@ -199,11 +257,15 @@ def test_payments_reference_the_real_shared_device():
 
 
 def test_unmodeled_concepts_written_header_only():
+    """refunds/fees remain genuinely unmodeled by Simulation/ -- unlike
+    settlements/bank_transactions/settlement_payments (now real, see
+    test_settlement_bridging_and_payment_grouping above), Simulation/ has
+    no refund or fee concept at all."""
     sim_dir = _make_fixture_sim_output(FIXTURE_DIR)
     out_dir = FIXTURE_DIR / "raw"
     transform_simulation_output(sim_dir, out_dir)
 
-    for name in ("refunds.csv", "fees.csv", "settlements.csv", "settlement_payments.csv", "bank_transactions.csv"):
+    for name in ("refunds.csv", "fees.csv"):
         with open(out_dir / name, newline="", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
         assert rows == [], f"{name} should be header-only (Simulation/ does not model this concept)"
@@ -213,6 +275,7 @@ def test_unmodeled_concepts_written_header_only():
 if __name__ == "__main__":
     try:
         test_transform_counts_and_skips()
+        test_settlement_bridging_and_payment_grouping()
         test_status_and_failure_reason_mapping()
         test_every_payment_has_own_order_1to1()
         test_real_devices_and_fabricated_instruments()

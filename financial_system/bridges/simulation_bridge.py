@@ -55,28 +55,54 @@ reportable result either way -- see bridges/README.md's "Risk" section and
 run_bridge.py for the real run.
 
 WHAT THIS BRIDGE STILL FABRICATES, AND WHY (the one remaining genuine
-gap): `payment_instruments.csv` (Heimdall's separate payment-instrument
-concept -- card/UPI/wallet, independently of device) has no Simulation
-equivalent at all -- `Simulation/` still does not model a payment
-instrument as distinct from a device. This bridge synthesizes exactly one
-PaymentInstrument per (Person, their real Device) pair -- a thin 1:1
-wrapper AROUND the now-real device, deterministically named from the real
-`device_id` (not from `person_id` alone, as before), so it is directly
-traceable to the real device it stands in for, but its `type`/
-`masked_identifier` fields remain fixed placeholder strings carrying no
-signal. Recovery's decision logic (`recovery/signals.py`) never reads
-`instrument_id`'s content (confirmed by reading it), so this fabrication
-cannot distort a Recovery result; Risk's logic (`risk/signals.py`) never
-reads PaymentInstrument at all (it keys entirely off Device), so it
-cannot distort a Risk result either. Flagged here, in the field-mapping
-table in README.md, and again in the run report, so it is never mistaken
-for simulated instrument data.
+gap, before the Controller addition below): `payment_instruments.csv`
+(Heimdall's separate payment-instrument concept -- card/UPI/wallet,
+independently of device) has no Simulation equivalent at all --
+`Simulation/` still does not model a payment instrument as distinct from
+a device. This bridge synthesizes exactly one PaymentInstrument per
+(Person, their real Device) pair -- a thin 1:1 wrapper AROUND the
+now-real device, deterministically named from the real `device_id` (not
+from `person_id` alone, as before), so it is directly traceable to the
+real device it stands in for, but its `type`/`masked_identifier` fields
+remain fixed placeholder strings carrying no signal. Recovery's decision
+logic (`recovery/signals.py`) never reads `instrument_id`'s content
+(confirmed by reading it), so this fabrication cannot distort a Recovery
+result; Risk's logic (`risk/signals.py`) never reads PaymentInstrument at
+all (it keys entirely off Device), so it cannot distort a Risk result
+either. Flagged here, in the field-mapping table in README.md, and again
+in the run report, so it is never mistaken for simulated instrument data.
+
+SETTLEMENT DATA IS NOW REAL (later addition, Controller task, see
+bridges/README.md's "Part 3: Controller" section for the full detail):
+`Simulation/`'s engine has always had a real settlement mechanism
+(`world/engine.py`'s `_run_settlement()`) -- once per simulated day, it
+sweeps every Merchant's pending (received-but-not-yet-settled) balance
+into their settled account in one batch transfer, `kind == "settlement"`,
+exactly T+1 (confirmed by reading `_run_settlement`'s own code and
+docstring, not assumed). This IS structurally a Heimdall Settlement
+batch already -- one settlement per merchant per day -- so this bridge
+now maps each such transaction directly onto one `Settlement` row, one
+matching `BankTransaction` row (Simulation has no banking-discrepancy
+concept, so the "actual deposit" is honestly identical to the
+settlement's own net_amount -- this is expected to make every bridged
+settlement reconcile cleanly, not a gap), and the `settlement_payments.csv`
+rows needed to reconstruct which successful purchases were actually swept
+into it (exactly that merchant's successful `purchase` transactions from
+the calendar day immediately before the settlement's own date -- the
+T+1 timing `_run_settlement` implements). `fee_amount`/`tax_amount` are
+fabricated-zero (`Simulation/` has no fee/tax concept), stated plainly
+below and in README.md -- and Controller's own real reconciliation logic
+(`reconciliation/deterministic.py`'s `reconcile_settlement()`) never
+reads either field at all (confirmed by reading it), so this fabrication
+cannot distort a Controller decision either.
 """
 from __future__ import annotations
 
 import csv
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 # Column order for each Heimdall raw CSV this bridge writes -- copied by hand
@@ -132,7 +158,15 @@ class BridgeTransformReport:
     devices_written: int = 0
     instruments_written: int = 0
     shared_devices: int = 0  # real Devices with >=2 distinct owner_person_ids
-    skipped_transaction_kinds: dict = field(default_factory=dict)  # kind -> count, e.g. salary/settlement/sweep
+    settlements_written: int = 0
+    bank_transactions_written: int = 0
+    settlement_payments_written: int = 0
+    # Self-check: for every bridged settlement, sum(assigned payment amounts) must
+    # equal the settlement's own amount (Simulation's sweep amount already IS that
+    # sum, by construction -- see world/engine.py's _run_settlement docstring).
+    # Populated only if the grouping logic ever produces a mismatch -- expected empty.
+    settlement_sum_check_mismatches: list = field(default_factory=list)
+    skipped_transaction_kinds: dict = field(default_factory=dict)  # kind -> count, e.g. salary/sweep
     fabricated_fields: list = field(default_factory=list)
 
 
@@ -276,14 +310,29 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
     merchant_ids = {m["merchant_id"] for m in merchants}
 
     # -- orders.csv + payments.csv, one order+payment per person->merchant
-    # transaction (kind in {purchase, payment_failure}). Everything else in
-    # Simulation/'s kind vocabulary (salary, settlement, household_sweep,
-    # savings_sweep, org_funding) is not a customer purchase and is skipped
-    # -- not a Heimdall Payment/Order at all, on either side of this bridge.
+    # transaction (kind in {purchase, payment_failure}). `settlement` is
+    # handled separately below (it maps onto Settlement/BankTransaction/
+    # settlement_payments, not Order/Payment). Everything else in
+    # Simulation/'s kind vocabulary (salary, household_sweep, savings_sweep,
+    # org_funding) is not a customer purchase and is skipped -- not a
+    # Heimdall Payment/Order/Settlement at all, on either side of this bridge.
     order_rows, payment_rows = [], []
+    settlement_txns: list[dict] = []
+    # (merchant_id, calendar_date_str) -> [(payment_id, amount_str), ...] for
+    # successful purchases only (a payment_failure moves no money into the
+    # merchant's pending account -- confirmed by reading world/engine.py's
+    # _maybe_attempt_purchase: post_transfer only records "purchase" on
+    # success, "payment_failure" on failure, and only a successful transfer
+    # actually credits the merchant's pending account). This is what lets a
+    # later settlement transaction be traced back to exactly the purchases
+    # it swept.
+    purchases_by_merchant_day: dict[tuple[str, str], list[tuple[str, str]]] = {}
     skipped: dict[str, int] = {}
     for t in transactions:
         kind = t["kind"]
+        if kind == "settlement":
+            settlement_txns.append(t)
+            continue
         if kind not in ("purchase", "payment_failure"):
             skipped[kind] = skipped.get(kind, 0) + 1
             continue
@@ -327,16 +376,104 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
             "created_at": ts, "authorized_at": "" if is_failed else ts, "captured_at": "" if is_failed else ts,
         })
 
+        if not is_failed:
+            purchase_date = datetime.fromisoformat(ts).date().isoformat()
+            purchases_by_merchant_day.setdefault((to_id, purchase_date), []).append((payment_id, amount))
+
     _write_csv(bridge_raw_dir / "orders.csv", _HEIMDALL_HEADERS["orders.csv"], order_rows)
     _write_csv(bridge_raw_dir / "payments.csv", _HEIMDALL_HEADERS["payments.csv"], payment_rows)
     report.orders_written = len(order_rows)
     report.payments_written = len(payment_rows)
     report.skipped_transaction_kinds = skipped
 
+    # -- settlements.csv / bank_transactions.csv / settlement_payments.csv:
+    # REAL data, one Heimdall Settlement per Simulation `kind == "settlement"`
+    # transaction (Simulation's own T+1 per-merchant-per-day sweep --
+    # world/engine.py's _run_settlement -- already IS a settlement batch, no
+    # new Simulation feature needed). One matching BankTransaction per
+    # settlement, honestly identical in amount (see this module's docstring,
+    # "SETTLEMENT DATA IS NOW REAL"). settlement_payments.csv reconstructs
+    # exactly which successful purchases were swept: that merchant's
+    # successful purchases from the calendar day immediately before the
+    # settlement's own date -- _run_settlement runs at the START of a day,
+    # before that day's own purchases can land in the pending account, so
+    # whatever it sweeps is strictly yesterday's proceeds (confirmed by
+    # reading _run_settlement's own docstring and code, not assumed).
+    settlement_rows, bank_rows, settlement_payment_rows = [], [], []
+    for t in settlement_txns:
+        txn_id = t["transaction_id"]
+        merchant_id = t["to_id"]
+        amount = t["amount"]
+        ts = t["timestamp"]
+        settlement_id = f"settle_bridge_{txn_id}"
+        bank_txn_id = f"bank_bridge_{txn_id}"
+
+        settlement_rows.append({
+            "settlement_id": settlement_id, "merchant_id": merchant_id, "settlement_date": ts,
+            "gross_amount": amount, "fee_amount": "0", "tax_amount": "0", "net_amount": amount,
+        })
+        # description is built to contain settlement_id's own last 8 chars
+        # (>= entity_resolution/bank_settlement_matcher.py's SUFFIX_LEN=6)
+        # deliberately -- that matcher's deterministic-description pass is
+        # what actually produces the deposited_as edge Controller's
+        # reconcile_settlement() needs, the same mechanism the real
+        # dataset's own bank_transactions.csv descriptions use
+        # ("RAZORPAY <suffix> SETTLEMENT").
+        bank_rows.append({
+            "bank_txn_id": bank_txn_id, "utr": f"UTRBRIDGE{txn_id.split('_')[-1].upper()}",
+            "amount": amount, "value_date": ts,
+            "description": f"RAZORPAY {settlement_id[-8:]} SETTLEMENT BRIDGE",
+        })
+
+        settlement_date = datetime.fromisoformat(ts).date()
+        prior_day = (settlement_date - timedelta(days=1)).isoformat()
+        swept_payments = purchases_by_merchant_day.get((merchant_id, prior_day), [])
+        swept_sum = Decimal("0")
+        for payment_id, pay_amount in swept_payments:
+            settlement_payment_rows.append({"settlement_id": settlement_id, "payment_id": payment_id})
+            swept_sum += Decimal(pay_amount)
+        # Self-check, not just an assertion of correctness: Simulation's own
+        # sweep amount already IS the sum of the swept purchases' amounts
+        # (near-tautological by _run_settlement's own full-sweep design --
+        # see Simulation/docs/Memory.md's Phase 2 section), so any mismatch
+        # here would mean this grouping logic has a real bug.
+        if swept_sum != Decimal(amount):
+            report.settlement_sum_check_mismatches.append(
+                f"{settlement_id}: settlement amount={amount} but sum of its "
+                f"{len(swept_payments)} assigned payment(s)={swept_sum}"
+            )
+
+    _write_csv(bridge_raw_dir / "settlements.csv", _HEIMDALL_HEADERS["settlements.csv"], settlement_rows)
+    _write_csv(bridge_raw_dir / "bank_transactions.csv", _HEIMDALL_HEADERS["bank_transactions.csv"], bank_rows)
+    _write_csv(bridge_raw_dir / "settlement_payments.csv", _HEIMDALL_HEADERS["settlement_payments.csv"],
+               settlement_payment_rows)
+    report.settlements_written = len(settlement_rows)
+    report.bank_transactions_written = len(bank_rows)
+    report.settlement_payments_written = len(settlement_payment_rows)
+    report.fabricated_fields.append(
+        "settlements.fee_amount / settlements.tax_amount := '0' (fixed), so gross_amount == net_amount "
+        "always -- Simulation/ has no fee/tax concept at all. Controller's own real reconciliation logic "
+        "(reconciliation/deterministic.py's reconcile_settlement()) never reads fee_amount or tax_amount "
+        "at all (confirmed by reading it), so this fabrication cannot distort a Controller decision."
+    )
+    report.fabricated_fields.append(
+        "bank_transactions.amount := the settlement's own net_amount, identical every time -- Simulation/ "
+        "does not simulate any banking discrepancy/delay/error, so the honest 'actual deposit' is always "
+        "exactly what the settlement itself recorded. This is expected to make every bridged settlement "
+        "reconcile cleanly (PASS), not something to fix -- same honesty standard as Risk's zero fraud rings."
+    )
+    report.fabricated_fields.append(
+        "bank_transactions.utr / .description := deterministic placeholders derived from the settlement's "
+        "own bridge id -- Simulation/ has no UTR/bank-statement-description concept. description is built "
+        "to contain the settlement_id's own suffix specifically so Heimdall's real "
+        "entity_resolution/bank_settlement_matcher.py deterministic-description match resolves the "
+        "deposited_as edge, the same mechanism the real dataset's own bank_transactions.csv relies on."
+    )
+
     # -- concepts Simulation/ does not model at all: written header-only so
     # Phase 1's fixed ingestion-step list (financial_state/builder.py's
     # _INGESTION_STEPS) still runs unmodified end to end.
-    for name in ("refunds.csv", "fees.csv", "settlements.csv", "settlement_payments.csv", "bank_transactions.csv"):
+    for name in ("refunds.csv", "fees.csv"):
         _write_csv(bridge_raw_dir / name, _HEIMDALL_HEADERS[name], [])
 
     return report
