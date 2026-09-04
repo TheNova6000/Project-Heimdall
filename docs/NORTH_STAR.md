@@ -126,6 +126,34 @@ here, in miniature, in one domain at a time:
   statistical sanity-check). Scope: Recovery only — Risk and Controller
   closing their own write-back loops the same way is real, unattempted
   future work, same honesty convention as every other entry on this list.
+- **§18/§19 (as this task's own brief named them) / §33's real point, "the
+  system must distinguish REAL OBSERVATION / RESEARCH-SUPPORTED MECHANISM
+  / CALIBRATED SIMULATION... synthetic evidence cannot silently become
+  empirical evidence"** — `financial_system/bridges/drift_detector.py` is
+  a real, bounded instance of exactly this, closing the conceptual loop
+  the live-loop entry above and the Verification Engine entry both
+  opened: because Truman's mechanisms are KNOWN (not estimated), a
+  Heimdall decision made live against a running Truman world can be
+  checked against a precise, known expectation rather than a fuzzy "does
+  this look reasonable" judgment. Three checks, each pinned to one cited
+  mechanism, not a 4th "overall health score": (1) retry timing vs.
+  Truman's own fixed-monthly-`payday` income mechanism — real run: 21/23
+  (91.3%) of scheduled retries were structurally doomed (balance provably
+  could not have grown by the retry date), 0 of those actually attempted
+  succeeded anyway, verdict MATCH; (2) Recovery's `decision_score` (0.45
+  for `insufficient_funds`, read live from `recovery/signals.py`) vs.
+  Truman's own realized retry-success rate — real run: 0/22 (0.0%), exact
+  two-sided binomial test p=2.6e-06, verdict DRIFT-DETECTED, with an
+  honest causal diagnosis (check (1)'s own 1-day-retry-vs-monthly-payday
+  mismatch), not a forced "Heimdall is wrong" claim; (3) device-sharing
+  intensity vs. Risk's own positive `n_sharers` scoring weight (`risk/
+  scoring.py`), reusing the existing batch Risk bridge, unmodified — real
+  correlation r=0.407 across 74 real shared devices from a
+  population=500/days=120 run, verdict MATCH. INCONCLUSIVE is used as a
+  real, honest outcome, not avoided, whenever a check's own sample size
+  is too small to support a verdict. See `financial_system/bridges/
+  README.md`'s "Drift detector" section for the full real numbers and the
+  exact mechanism each check cites.
 
 The pattern across all of these: every one was built small, in one
 place, verified before moving on — never the other way around. That's

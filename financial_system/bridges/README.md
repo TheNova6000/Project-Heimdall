@@ -791,3 +791,87 @@ by `git diff --stat Simulation/` returning empty for that task, since
 `_run_settlement()`'s existing T+1 per-merchant-per-day batch already
 mapped directly onto Heimdall's Settlement concept with no new engine
 feature needed.
+
+## Drift detector (2026-09-04, later follow-on task -- closes the observability loop `docs/NORTH_STAR.md` names)
+
+`financial_system/bridges/drift_detector.py` is a SEPARATE, ADDITIVE,
+READ-ONLY analysis module (calls `run_live_recovery_loop`, `run_bridge`,
+and `run_simulation.run` unmodified; modifies none of them). Its premise:
+because Truman's mechanisms are KNOWN -- not estimated, cited, and tested
+(`Simulation/docs/Rules.md` #2, `Simulation/provenance/catalog.py`) -- a
+Heimdall decision made live against a running Truman world (via the Live
+Recovery loop above) can be checked against a precise, known expectation
+instead of a fuzzy "does this look reasonable" judgment. See
+`docs/NORTH_STAR.md` Section 33 ("But Simulation Must Never Become Fake
+Truth") and its "Already prefigured" entry for this task for the full
+conceptual grounding.
+
+**Three checks, each pinned to one specific, cited, already-verified
+Truman/Heimdall mechanism -- no 4th "overall health score"**:
+
+1. **Retry timing vs. Truman's payday mechanism.** Truman's ONLY income
+   mechanism is a person's own fixed monthly `payday`
+   (`world/agents/person.py`'s `maybe_receive_income`, `Simulation/docs/
+   Memory.md`'s Payday row). The live loop always retries exactly 1
+   simulated day after a failure, so a retry is provably STRUCTURALLY
+   DOOMED whenever the target day's day-of-month isn't the person's own
+   payday. Real run (seed=42/population=20/days=90): 21/23 (91.3%)
+   structurally doomed, 2/23 genuinely uncertain; 0 of the 20
+   structurally-doomed retries actually attempted succeeded (as the
+   mechanism demands) -- **MATCH**.
+2. **Recovery's `decision_score` vs. Truman's realized retry-success
+   rate.** `recovery/signals.py`'s `FAILURE_TAXONOMY["insufficient_funds"]
+   ["base_success_rate"]` (0.45, read live from the code) vs. the real
+   0/22 (0.0%) observed in the same run -- exact two-sided binomial test,
+   p=2.6e-06, statistically significant -- **DRIFT-DETECTED**, with an
+   honest causal diagnosis (not a bug): Check 1's own 1-day-retry-vs-
+   monthly-payday mismatch structurally explains the gap.
+3. **Device-sharing intensity vs. Risk's `decision_score`** (reuses the
+   existing, non-live, batch Risk bridge -- `run_bridge.py`, unmodified --
+   no live Risk loop built). `risk/scoring.py`'s own positive
+   `n_sharers_score = clamp((n_sharers-1)/3)` (weight 0.15) formula is
+   verified to hold exactly on every real scored device from a real
+   population=500/days=120 batch bridge run, and the real correlation
+   between `n_sharers` and `decision_score` across 74 real shared devices
+   is r=0.407 (non-negative, the expected direction) -- **MATCH**. Honest
+   caveat carried in the check's own output: Truman deliberately has no
+   fraud-ring mechanism, so a weak net correlation on the full score
+   (which is 85%-weighted by burst-based signals unrelated to n_sharers
+   here) would itself be the CORRECT, expected result, not a gap -- only a
+   genuinely negative correlation or a formula mismatch counts as drift.
+
+**Verdict vocabulary**: MATCH / DRIFT-DETECTED / INCONCLUSIVE (the last is
+a first-class, honest outcome -- e.g. Check 2 reports INCONCLUSIVE rather
+than a forced verdict whenever fewer than 5 retries were actually
+attempted, and Check 3 does the same whenever fewer than 2 n_sharers
+buckets have >=5 devices).
+
+### Real end-to-end run (verbatim, seed=42, population=20, banks=2, merchants=4, days=90; Check 3 batch run: population=500, banks=3, merchants=15, days=120)
+
+```
+DRIFT-DETECTED=1, MATCH=2
+```
+
+Total wall-clock for the full run (live loop + batch bridge run, both from
+scratch): 83.22s. See `test_drift_detector.py` and the module's own
+docstring for the full real report text and the exact real numbers behind
+each verdict.
+
+### New files (this task)
+
+- `financial_system/bridges/drift_detector.py` -- the detector: `CheckResult`
+  dataclass, the three check functions, `run_drift_detector()` orchestration,
+  `build_report()` (plain Markdown, same "no dashboard" convention as
+  `Simulation/validation/report.py`), and a CLI entry point.
+- `financial_system/bridges/test_drift_detector.py` -- 15 tests: 11 synthetic
+  (deliberately-constructed contradictions of each named mechanism, proving
+  the detector actually catches drift, not just always prints MATCH) plus 4
+  against a real (not mocked) fast live-loop run, including a determinism
+  check.
+
+Nothing under `financial_system/recovery|risk|reconciliation|
+financial_state|financial_graph|discovery_adapter|data`, nor
+`live_recovery_loop.py`, nor any existing `Simulation/world/*.py` file, was
+touched -- confirmed by `git diff --stat` returning empty for both
+`financial_system/` and `Simulation/` (only the two new files above are
+untracked).
