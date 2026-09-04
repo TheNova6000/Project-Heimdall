@@ -618,4 +618,40 @@ function aboutHTML(){ return `
   <p class="sec-sub" style="font-size:15.5px; color:var(--text); max-width:58ch;">We built a causal financial world, connected it to three decision domains, and demonstrated that decisions can act on that world and observe the resulting consequences &mdash; without contaminating the underlying financial state.</p>
   <p class="sec-sub">This website is a live window into that system, not a mockup of one: every verdict you see was computed by the real backend, on the real dataset, at the moment you clicked.</p>
 </section>
+<section>
+  <div class="section-label">ABOUT THE BUILDER<span class="line"></span></div>
+  <h2 class="sec-title">Sri Krishna Batkeeri</h2>
+  <p class="sec-sub" style="max-width:70ch;">AI/ML &amp; Generative AI engineer, 2nd-year B.Tech CSE (AI &amp; ML) at Aurora University. Builds retrieval-augmented and agentic systems end to end &mdash; RAG and GraphRAG pipelines, multi-agent reasoning over knowledge graphs, LLM-integrated products &mdash; alongside lower-level systems work (browser-based OS kernels, WebAssembly). This project follows the same pattern as the rest of the work below: own the architecture and the debugging, direct AI coding agents to build it, and label honestly which parts were hand-written.</p>
+  <div class="tools" style="margin-top:10px; margin-bottom:24px;">
+    <span class="tool-chip">srikrishnabatkeeri@gmail.com</span>
+    <span class="tool-chip"><a href="https://github.com/TheNova6000" target="_blank" rel="noopener" style="color:inherit; text-decoration:none;">github.com/TheNova6000</a></span>
+  </div>
+  <div class="subsys-grid">
+    <div class="subsys">
+      <h3 style="color:var(--hud);">Discovery.AI <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; AI-generated &middot; live</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A recursive knowledge-graph investigator: decomposes open-ended questions into sub-questions, investigates each through six live retrievers, and renders results as an explorable, source-attributed graph instead of a single answer. This is the same engine wired into Heimdall's own investigation boundary, above.</p>
+    </div>
+    <div class="subsys">
+      <h3 style="color:var(--hud);">NexusHub <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; AI-generated</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A citation-graph search engine treating research literature as a graph, not a keyword index &mdash; crawls OpenAlex's 250M-work graph, runs PageRank/HITS/Louvain/Node2Vec to surface cross-domain bridge papers, behind a FastAPI hybrid search backend.</p>
+    </div>
+    <div class="subsys">
+      <h3 style="color:var(--hud);">REOS <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; AI-generated &middot; live</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A multi-tenant real-estate SaaS, co-built with a two-person team &mdash; a Next.js + Supabase dashboard and a client-branded property site sharing one tenant-isolated backend. Shipped to a real first client.</p>
+    </div>
+    <div class="subsys">
+      <h3 style="color:var(--hud);">WAROS <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; AI-generated</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A browser-native OS kernel running untrusted apps sandboxed in Web Workers behind a permission-gated IPC layer, with simulated scheduling, virtual memory (SharedArrayBuffer), and a filesystem (IndexedDB/OPFS). Ported DOOM and a Game Boy emulator to run inside it.</p>
+    </div>
+    <div class="subsys">
+      <h3 style="color:var(--good);">Pyone <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; hand-coded, no AI assistance</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A natural-language-syntax DSL designed and interpreted from scratch by hand &mdash; lexer, stack-based expression evaluator, variable management, control-flow parsing &mdash; for a first-year term project.</p>
+    </div>
+    <div class="subsys">
+      <h3 style="color:var(--good);">Career Intelligence Agent <span style="font-size:10px; color:var(--muted-2); font-weight:400;">&middot; hand-coded &middot; live</span></h3>
+      <p style="font-size:12.5px; color:var(--muted); line-height:1.65;">A six-phase job-search pipeline &mdash; fit scoring, company research, cold-email generation &mdash; hand-built end to end, orchestrating LLM, GitHub, and JSearch APIs directly. Advanced Frontend course project.</p>
+    </div>
+  </div>
+  <p style="font-size:11px; color:var(--muted-2); margin-top:18px;">CVIT Summer Schools on AI, IIIT Hyderabad (2025, 2026) &middot; SERI 2026, IIIT Hyderabad &middot; BITS Pilani Hyderabad AI/ML Workshop &amp; Hackathon (Jan 2026)</p>
+</section>
 <footer><p>PROJECT HEIMDALL &middot; AI REVENUE RECOVERY</p></footer>`; }
