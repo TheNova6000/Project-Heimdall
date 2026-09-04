@@ -40,6 +40,7 @@ const CY_STYLE = [
 ];
 
 let currentCase = null;
+let currentMode = 'frozen'; // 'frozen' (judged dataset) | 'truman' (live, ticking SimulationEngine)
 let walkthroughToken = 0; // bumped on every selection; stale async work checks this and bails
 const chatThreads = {}; // id -> {turns:[{role,content}], messages:[...], busy, verdict, type, id}
 
@@ -50,8 +51,17 @@ function liveShell(){
     <span class="sub">Pick a real transaction &mdash; watch Heimdall reason through it, phase by phase, live.</span>
     <span class="meta"><span class="status-dot js-backend-dot"></span><span class="js-backend-label">connecting…</span></span>
   </div>
+  <div class="live-mode-toggle">
+    <button class="mode-btn active" id="live-mode-frozen" onclick="switchMode('frozen')">FROZEN DATASET</button>
+    <button class="mode-btn" id="live-mode-truman" onclick="switchMode('truman')">TRUMAN LIVE</button>
+    <span class="mode-hint" id="live-mode-hint">400 real customers · 1000 real payments · one real, judged, frozen run.</span>
+  </div>
   <div class="app-shell2">
-    <div class="rail"><div class="rail-head">// REAL CASES</div><div id="live-rail-list"><p style="padding:0 14px; font-size:11px; color:var(--muted-2);">loading…</p></div></div>
+    <div class="rail">
+      <div id="live-truman-controls" style="display:none;"></div>
+      <div class="rail-head">// REAL CASES</div>
+      <div id="live-rail-list"><p style="padding:0 14px; font-size:11px; color:var(--muted-2);">loading…</p></div>
+    </div>
     <div class="chat-panel">
       <div class="chat-head" id="live-chat-head">Select a case</div>
       <div class="chat-evidence" id="live-phase-panel"></div>
@@ -71,11 +81,93 @@ function liveShell(){
 async function initLivePage(){
   document.getElementById('live').innerHTML = liveShell();
   renderStatus();
+  currentMode = 'frozen';
+  await loadFrozenRail();
+}
+
+function switchMode(mode){
+  if(mode === currentMode) return;
+  currentMode = mode;
+  currentCase = null;
+  walkthroughToken++; // invalidate any in-flight walkthrough/graph work from the old mode
+  document.getElementById('live-mode-frozen').classList.toggle('active', mode === 'frozen');
+  document.getElementById('live-mode-truman').classList.toggle('active', mode === 'truman');
+  document.getElementById('live-mode-hint').textContent = mode === 'truman'
+    ? 'A real SimulationEngine, ticking one real day at a time in this server’s memory — Recovery + Risk live loops actually run after every tick.'
+    : '400 real customers · 1000 real payments · one real, judged, frozen run.';
+  document.getElementById('live-truman-controls').style.display = mode === 'truman' ? 'block' : 'none';
+  document.getElementById('live-chat-head').textContent = 'Select a case';
+  document.getElementById('live-phase-panel').innerHTML = '';
+  document.getElementById('live-chat-messages').innerHTML = '';
+  document.getElementById('live-canvas').innerHTML = '';
+  document.getElementById('live-graph-count').textContent = 'select a case to begin';
+  if(mode === 'truman') loadTrumanRail();
+  else loadFrozenRail();
+}
+
+async function loadFrozenRail(){
+  document.getElementById('live-rail-list').innerHTML = `<p style="padding:0 14px; font-size:11px; color:var(--muted-2);">loading…</p>`;
   try{
     const cases = await api('/api/cases');
+    if(currentMode !== 'frozen') return;
     renderLiveRail(cases);
   }catch(e){
+    if(currentMode !== 'frozen') return;
     document.getElementById('live-rail-list').innerHTML = `<p style="padding:0 14px; font-size:11px; color:var(--critical);">Backend unreachable: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadTrumanRail(){
+  const listEl = document.getElementById('live-rail-list');
+  const ctrl = document.getElementById('live-truman-controls');
+  listEl.innerHTML = `<p style="padding:0 14px; font-size:11px; color:var(--muted-2);">loading…</p>`;
+  try{
+    const state = await api('/api/truman/state');
+    if(currentMode !== 'truman') return;
+    renderTrumanControls(ctrl, state);
+    renderTrumanRail(listEl, state);
+  }catch(e){
+    if(currentMode !== 'truman') return;
+    ctrl.innerHTML = '';
+    listEl.innerHTML = `<p style="padding:0 14px; font-size:11px; color:var(--critical);">Backend unreachable: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderTrumanControls(ctrl, state){
+  const ended = state.day >= state.max_days;
+  ctrl.innerHTML = `
+    <div class="truman-day">DAY <b>${state.day}</b> / ${state.max_days}</div>
+    <button class="btn btn-primary" style="width:100%; margin:8px 0 6px;" id="live-truman-tick" onclick="tickTruman()" ${ended ? 'disabled' : ''}>${ended ? 'HORIZON COMPLETE' : 'ADVANCE ONE DAY ▶'}</button>
+    <div class="truman-meta">seed ${state.seed} · ${state.population} people · ${state.total_transactions} real transactions so far</div>
+    <div id="live-truman-tickerr"></div>`;
+}
+
+function renderTrumanRail(listEl, state){
+  const section = (title, ids, kind) => `
+    <div class="rail-head" style="margin-top:14px;">${title} (${ids.length})</div>
+    ${ids.length ? ids.map(id => `
+      <div class="rail-item${currentCase === id ? ' active' : ''}" data-case-id="${id}" onclick="selectLiveCase('${id}','${kind}')">
+        <div class="t">${escapeHtml(id)}</div>
+      </div>`).join('') : `<p style="padding:0 14px; font-size:10.5px; color:var(--muted-2);">none yet — advance a day</p>`}`;
+  listEl.innerHTML =
+    section('FAILED PAYMENTS', state.failed_payments, 'Payment') +
+    section('ELIGIBLE DEVICES', state.eligible_devices, 'Device') +
+    (state.blocked_devices.length ? section('BLOCKED DEVICES', state.blocked_devices, 'Device') : '');
+}
+
+async function tickTruman(){
+  const btn = document.getElementById('live-truman-tick');
+  const errEl = document.getElementById('live-truman-tickerr');
+  if(btn){ btn.disabled = true; btn.textContent = 'TICKING…'; }
+  if(errEl) errEl.innerHTML = '';
+  try{
+    await api('/api/truman/tick', { method: 'POST' });
+    if(currentMode !== 'truman') return;
+    await loadTrumanRail();
+  }catch(e){
+    if(currentMode !== 'truman') return;
+    if(errEl) errEl.innerHTML = `<p style="font-size:10.5px; color:var(--critical); margin-top:4px;">Tick failed: ${escapeHtml(e.message)}</p>`;
+    if(btn){ btn.disabled = false; btn.textContent = 'ADVANCE ONE DAY ▶'; }
   }
 }
 
@@ -98,14 +190,16 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function fetchVerdict(id, type){
-  if(type === 'Payment') return api(`/api/recovery/${encodeURIComponent(id)}`);
-  if(type === 'Device') return api(`/api/risk/${encodeURIComponent(id)}`);
-  if(type === 'Settlement') return api(`/api/controller/${encodeURIComponent(id)}`);
+function fetchVerdict(id, type, mode){
+  const base = mode === 'truman' ? '/api/truman' : '/api';
+  if(type === 'Payment') return api(`${base}/recovery/${encodeURIComponent(id)}`);
+  if(type === 'Device') return api(`${base}/risk/${encodeURIComponent(id)}`);
+  if(type === 'Settlement') return api(`${base}/controller/${encodeURIComponent(id)}`); // Truman has no Settlement mode
   return Promise.resolve(null);
 }
 
-async function selectLiveCase(id, type){
+async function selectLiveCase(id, type, mode){
+  mode = mode || currentMode;
   currentCase = id;
   const myToken = ++walkthroughToken;
   document.querySelectorAll('.rail-item').forEach(el => el.classList.toggle('active', el.dataset.caseId === id));
@@ -115,15 +209,19 @@ async function selectLiveCase(id, type){
   document.getElementById('live-canvas').innerHTML = '';
   document.getElementById('live-graph-count').textContent = 'loading…';
 
+  const neighborhoodUrl = mode === 'truman'
+    ? `/api/truman/graph/neighborhood/${encodeURIComponent(id)}`
+    : `/api/graph/neighborhood/${encodeURIComponent(id)}`;
+
   try{
     const [neighborhood, verdict] = await Promise.all([
-      api(`/api/graph/neighborhood/${encodeURIComponent(id)}`),
-      fetchVerdict(id, type),
+      api(neighborhoodUrl),
+      fetchVerdict(id, type, mode),
     ]);
     if(myToken !== walkthroughToken) return; // a later click superseded this one
     if(!chatThreads[id]) chatThreads[id] = { turns:null, messages:[], busy:false, verdict, type, id };
     else chatThreads[id].verdict = verdict;
-    startWalkthrough(id, type, verdict, neighborhood, myToken);
+    startWalkthrough(id, type, verdict, neighborhood, myToken, mode);
   }catch(e){
     if(myToken !== walkthroughToken) return;
     document.getElementById('live-chat-head').textContent = id;
@@ -252,12 +350,21 @@ function controllerPhases(verdict){
   ];
 }
 
-function actionDescriptionFor(type, verdict){
+function actionDescriptionFor(type, verdict, mode){
+  if(mode === 'truman'){
+    if(type === 'Payment' && verdict.decision === 'RETRY'){
+      return 'This is the live bridge, genuinely running: a RETRY decision here gets scheduled and actually re-attempted on the next real tick, against this person’s real, then-current balance in this same running world — click "Advance one day" afterward and check this payment again to see the real outcome, including an honest second failure if the balance still doesn’t cover it.';
+    }
+    if(type === 'Device' && verdict.decision === 'HOLD'){
+      return 'This is the live bridge, genuinely running: a HOLD here real-blocks this device via block_device() — every subsequent purchase attempt from it mechanically fails starting the next tick, a real mechanical consequence traced in this same world, not a log line.';
+    }
+    return 'This decision is authorized and logged in the running environment.';
+  }
   if(type === 'Payment' && verdict.decision === 'RETRY'){
-    return 'In this submission’s live bridge (see the Truman page), a real RETRY decision actually re-attempts the purchase against the person’s real, current balance inside a running Truman world. This page queries the frozen, judged dataset — a real, one-time run, not a live clock — so here the action is authorized and logged, not re-executed against a live world.';
+    return 'In this submission’s live bridge (see Truman Live), a real RETRY decision actually re-attempts the purchase against the person’s real, current balance inside a running Truman world. This page queries the frozen, judged dataset — a real, one-time run, not a live clock — so here the action is authorized and logged, not re-executed against a live world.';
   }
   if(type === 'Device' && verdict.decision === 'HOLD'){
-    return 'Risk’s own live bridge blocks this device’s subsequent purchases inside a running Truman world (see the Truman page). Here, against the frozen dataset, the action is authorized and logged.';
+    return 'Risk’s own live bridge blocks this device’s subsequent purchases inside a running Truman world (see Truman Live). Here, against the frozen dataset, the action is authorized and logged.';
   }
   return 'Controller has no live loop yet — documented openly as the one domain still batch-only. The action below is what Controller authorized for this real settlement.';
 }
@@ -284,7 +391,7 @@ function investigationHTML(inv){
     <p style="font-size:10px; color:var(--muted-2); margin-top:8px;">Carried for audit only — structurally cannot change the Branch phase’s decision above.</p>`;
 }
 
-function buildPhases(type, id, verdict){
+function buildPhases(type, id, verdict, mode){
   const phases = [
     { label:'DISPATCH', isGraph:true,
       desc:`Heimdall reads ${id}’s real, current state and its immediate neighborhood from the graph, then routes it to the ${verdict.agent} agent.` },
@@ -293,10 +400,15 @@ function buildPhases(type, id, verdict){
   else if(type === 'Device') phases.push(...riskPhases(verdict));
   else if(type === 'Settlement') phases.push(...controllerPhases(verdict));
 
-  const mightInvestigate =
+  // Truman Live's investigation trigger isn't wired yet (a genuine, stated
+  // scope boundary -- see api/truman_env.py: Recovery+Risk live loops only,
+  // same as the real financial_system/bridges/ this reuses) -- skip the
+  // phase there rather than call an endpoint that doesn't exist for it.
+  const mightInvestigate = mode !== 'truman' && (
     (type === 'Payment' && verdict.decision === 'INVESTIGATE') ||
     (type === 'Device' && verdict.decision === 'HOLD') ||
-    (type === 'Settlement' && verdict.decision === 'INVESTIGATE');
+    (type === 'Settlement' && verdict.decision === 'INVESTIGATE')
+  );
   if(mightInvestigate){
     phases.push({
       label: 'SUB-AGENT INVESTIGATION',
@@ -324,7 +436,7 @@ function buildPhases(type, id, verdict){
 
   phases.push({
     label: 'ACTION / OUTCOME',
-    desc: actionDescriptionFor(type, verdict),
+    desc: actionDescriptionFor(type, verdict, mode),
     render: () => (
       metricRow('decision', verdict.decision) +
       metricRow('action', verdict.proposed_action)
@@ -334,11 +446,11 @@ function buildPhases(type, id, verdict){
   return phases;
 }
 
-function startWalkthrough(id, type, verdict, neighborhood, token){
+function startWalkthrough(id, type, verdict, neighborhood, token, mode){
   document.getElementById('live-chat-head').textContent = `${type} — ${id}`;
   document.getElementById('live-graph-count').textContent =
     `${neighborhood.nodes.length} real nodes · ${neighborhood.edges.length} real edges`;
-  const phases = buildPhases(type, id, verdict);
+  const phases = buildPhases(type, id, verdict, mode);
   let i = 0;
 
   function progressHTML(){

@@ -76,22 +76,22 @@ def _strip_trailing_comment(rhs: str) -> str:
 def _check_settlement_delay() -> None:
     engine_text = (SIM_ROOT / "world" / "engine.py").read_text(encoding="utf-8")
     lines = _read_lines("world/engine.py")
-    assert "_run_settlement" in lines[637], f"expected _run_settlement at engine.py:638, got: {lines[637]!r}"
+    assert "_run_settlement" in lines[745], f"expected _run_settlement at engine.py:746, got: {lines[745]!r}"
     assert "RESEARCH-GROUNDED, WITH A NAMED SIMPLIFICATION" in engine_text
     assert "takes one to three business days after the transaction" in engine_text
 
 
 def _check_settlement_batch_hour() -> None:
     lines = _read_lines("world/engine.py")
-    assert "hour=3, minute=0, second=0" in lines[697], (
-        f"expected 'hour=3, minute=0, second=0' at engine.py:698, got: {lines[697]!r}"
+    assert "hour=3, minute=0, second=0" in lines[805], (
+        f"expected 'hour=3, minute=0, second=0' at engine.py:806, got: {lines[805]!r}"
     )
 
 
 def _check_event_timestamp_range() -> None:
     lines = _read_lines("world/engine.py")
-    assert "self.rng.randint(7, 22)" in lines[1055], (
-        f"expected 'self.rng.randint(7, 22)' at engine.py:1056, got: {lines[1055]!r}"
+    assert "self.rng.randint(7, 22)" in lines[1226], (
+        f"expected 'self.rng.randint(7, 22)' at engine.py:1227, got: {lines[1226]!r}"
     )
     clock_text = (SIM_ROOT / "world" / "clock.py").read_text(encoding="utf-8")
     assert "MODELING ASSUMPTION" in clock_text
@@ -106,7 +106,7 @@ _CUSTOM_LOCATION_CHECKS = {
 
 def test_every_implemented_entry_location_matches_real_code():
     implemented = [e for e in CATALOG.values() if e.status == "implemented"]
-    assert len(implemented) == 28, f"expected 28 implemented entries, found {len(implemented)}"
+    assert len(implemented) == 29, f"expected 29 implemented entries, found {len(implemented)}"
 
     checked = 0
     for entry in implemented:
@@ -151,7 +151,7 @@ def test_every_implemented_entry_location_matches_real_code():
 
 def test_every_research_grounded_entry_citation_is_verbatim_in_research_md():
     entries = research_grounded()
-    assert len(entries) == 9, f"expected 9 research-grounded entries, found {len(entries)}"
+    assert len(entries) == 10, f"expected 10 research-grounded entries, found {len(entries)}"
 
     checked = 0
     for entry in entries:

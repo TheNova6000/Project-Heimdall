@@ -253,6 +253,16 @@ footer p{color:var(--muted-2); font-size:11.5px;}
 .app-shell2{display:grid; grid-template-columns:210px 380px 1fr; flex:1; min-height:0;}
 @media (max-width:980px){.app-shell2{grid-template-columns:1fr; flex:none; height:auto;}}
 
+.live-mode-toggle{flex:none; display:flex; align-items:center; gap:10px; padding:9px 22px; border-bottom:1px solid var(--border); flex-wrap:wrap;}
+.mode-btn{font-family:var(--font-mono); font-size:10.5px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; padding:6px 12px; background:transparent; color:var(--muted); border:1px solid var(--border-strong); cursor:pointer; transition:background .1s, color .1s, border-color .1s;}
+.mode-btn:hover{color:var(--text); border-color:var(--hud);}
+.mode-btn.active{background:#fff; color:#000; border-color:#fff;}
+.mode-hint{font-size:10.5px; color:var(--muted-2); margin-left:4px;}
+#live-truman-controls{padding:12px 14px; border-bottom:1px solid var(--border); background:rgba(255,255,255,0.015);}
+.truman-day{font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted);}
+.truman-day b{color:var(--text); font-size:13px;}
+.truman-meta{font-size:9.5px; color:var(--muted-2); line-height:1.5;}
+
 /* settings page */
 .settings-form{display:flex; flex-direction:column; gap:16px; max-width:520px;}
 .settings-form label{font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted-2); display:block; margin-bottom:6px;}

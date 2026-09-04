@@ -705,3 +705,63 @@ verification or definitional-match tests, not because no research was
 found. That is itself the correct Phase 3 outcome per this project's own
 stated standard (Rules.md #5): a small, honestly-reported result, not an
 inflated one.
+
+---
+
+## Addendum — instrument-validity-period research (Truman Phase 3,
+## "Mechanism Engine", 2026-09-04)
+
+A later, separate, explicitly-scoped task ("Truman Phase 3: the Mechanism
+Engine" — see `docs/Memory.md`'s "Phase 3" section, NOT the same "Phase 3"
+this document's title/Part A-C refers to, which was a bounded behavioral-
+realism research pass; naming collision inherited from `docs/Phases.md`,
+not introduced here) added a second, causally-distinct payment-failure
+mechanism (`ExpiredInstrumentMechanism`) and needed one new fact: how long
+a real payment card/instrument is typically valid before expiring. That
+task's own brief explicitly authorized "a BOUNDED, additional real
+WebSearch/WebFetch pass for this specific question... following the exact
+same verification discipline this document already established." This
+section is that pass's output — purely additive, nothing above this line
+was edited.
+
+**Two independently WebFetched, directly-quoted sources** (not a
+WebSearch-synthesized paraphrase — the same bar Part A's own strongest
+citations meet, e.g. the Kansas City Fed fraud-rate figure):
+
+- WalletHub, "Card Expiration Dates: Everything You Need to Know"
+  (wallethub.com/edu/cc/credit-cards-expiration-date/25566, accessed
+  2026): "The expiration date on a credit card is usually three to five
+  years after the card is activated, and you can use the card without
+  interruption through the end of the listed month."
+- Capital One, "Credit Card Expiration Dates: What to Know"
+  (capitalone.com/learn-grow/money-management/credit-card-expiration-and-
+  replacement/, accessed 2026), an issuer's own public statement: "Credit
+  cards generally expire after two to four years."
+
+These two sources do NOT state identical bounds — real issuer practice
+genuinely varies (2-4 years per Capital One vs. 3-5 years per WalletHub).
+An initial WebSearch synthesis (not independently re-verified, so treated
+as corroborating context only, per this document's own established
+discipline for distinguishing a WebSearch summary from a directly-fetched
+quote) additionally described five years as "the standard for most major
+credit cards (Visa, Mastercard, American Express, Discover)."
+
+**What this grounds, and what it doesn't**: the qualitative fact that real
+card/instrument validity windows sit in the low-single-digit-years range
+(roughly 2-5 years) is real and directly verified — not invented. The
+SPECIFIC choice of exactly which sub-range to use as a simulation
+parameter (Truman's `DEVICE_VALIDITY_PERIOD_DAYS_RANGE = (3*365, 5*365)`,
+anchored on WalletHub's more commonly-cited "usual" figure) is a separate,
+named MODELING ASSUMPTION layered on top of this citation — no source
+states a single universal number, so a specific choice within the
+verified range still had to be made. This is the exact same
+"qualitative-fact-vs-specific-value" split this document's own Part B
+already applied to the settlement-delay finding (T+1 chosen from a cited
+1-3 business day range). See `world/engine.py`'s
+`DEVICE_VALIDITY_PERIOD_DAYS_RANGE` and `provenance/catalog.py`'s matching
+entry for the full code-level treatment, and `docs/Memory.md`'s "Phase 3"
+section for the mechanism this fact supports.
+
+No dataset was downloaded; both sources were fetched as individual public
+web pages via WebFetch, with their exact stated sentences quoted above
+verbatim, per this document's own citation standard.

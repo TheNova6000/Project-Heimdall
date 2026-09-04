@@ -138,18 +138,69 @@ def test_no_account_ever_goes_negative():
 
 
 def test_payment_failure_never_moves_money():
-    """A payment_failure transaction must correspond to no ledger change:
-    balance_before < amount, and the failure is recorded without any debit
-    having occurred (Bank.debit returns False and mutates nothing)."""
+    """
+    A payment_failure transaction must correspond to no ledger change at
+    all -- checked here two ways.
+
+    NECESSARY update (Phase 3, "Mechanism Engine" -- docs/Memory.md's
+    "Phase 3" section): before this phase, EVERY payment_failure had
+    exactly one cause (insufficient funds), so `balance_before < amount`
+    held for all of them unconditionally. Phase 3 adds a second, causally
+    distinct mechanism (ExpiredInstrumentMechanism, world/mechanisms.py)
+    that can fire even when the payer's balance is fully sufficient -- so
+    a blanket `balance_before < amount` assertion over EVERY payment_
+    failure row is now factually wrong, not just stale. This is not a
+    silent loosening: the assertion is now correctly SCOPED to the
+    mechanism it actually proves something about (identified by each
+    transaction's own corresponding Event.event_type, since Transaction
+    itself carries no cause field -- transactions/events are appended 1:1,
+    in the same order, by every _record() call, per
+    test_every_event_has_a_matching_transaction_payload above), and a
+    NEW, general check (below) proves the stronger, mechanism-agnostic
+    claim Rules.md #7 actually requires: no payment_failure of ANY kind
+    ever has a matching ledger entry.
+    """
     result = _small_engine(seed=11).run()
 
     failures = [t for t in result.transactions if t.kind == "payment_failure"]
     assert failures, "expected at least one payment_failure in this run (seed=11, 50 persons, 60 days)"
+
+    event_by_txn_id = {t.transaction_id: e for t, e in zip(result.transactions, result.events)}
+
+    insufficient_funds_failures = 0
+    expired_instrument_failures = 0
     for t in failures:
-        assert t.balance_before < t.amount, (
-            f"{t.transaction_id} is a payment_failure but balance_before "
-            f"({t.balance_before}) >= amount ({t.amount})"
-        )
+        event_type = event_by_txn_id[t.transaction_id].event_type
+        if event_type in ("purchase_failed", "salary_failed"):
+            # THE original, still-unchanged causal proof for this
+            # mechanism specifically: balance_before < amount, always.
+            assert t.balance_before < t.amount, (
+                f"{t.transaction_id} ({event_type}) is a payment_failure but balance_before "
+                f"({t.balance_before}) >= amount ({t.amount})"
+            )
+            insufficient_funds_failures += 1
+        elif event_type == "purchase_failed_expired_instrument":
+            # Phase 3's new mechanism: causally distinct from balance, so
+            # balance_before >= amount is expected and fine here -- proven
+            # to move zero money by the general, mechanism-agnostic check
+            # below instead.
+            expired_instrument_failures += 1
+        elif event_type == "purchase_blocked_device":
+            pass  # live-risk-loop mechanism; never produced by a normal run
+        else:
+            raise AssertionError(f"{t.transaction_id}: unrecognized payment_failure event_type {event_type!r}")
+
+    assert insufficient_funds_failures > 0, "expected at least one insufficient-funds payment_failure"
+
+    # The general, mechanism-agnostic proof: NO payment_failure transaction
+    # -- regardless of which mechanism caused it -- has a matching ledger
+    # entry anywhere. Stronger than the per-mechanism balance check above,
+    # and the one that actually generalizes as new mechanisms are added.
+    failure_txn_ids = {t.transaction_id for t in failures}
+    ledger_txn_ids = {entry.transaction_id for a in result.accounts for entry in a.ledger}
+    assert not (failure_txn_ids & ledger_txn_ids), (
+        "a payment_failure transaction has a matching ledger entry -- a failed payment must move no money"
+    )
 
 
 # ---------------------------------------------------------------------------

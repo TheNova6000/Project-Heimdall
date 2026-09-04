@@ -113,6 +113,44 @@ Replace Phase 1's placeholder/assumption-labeled probability rules
 with research-grounded ones where real sources exist (income
 distributions, spending patterns) — each swap cited, not assumed.
 
+(A separate, later task called itself "Truman Phase 3: the Mechanism
+Engine" and added a pluggable failure-mechanism framework plus one new,
+research-grounded failure cause — see the unnumbered "Mechanism Engine"
+entry below. It does NOT satisfy this Phase 3's actual scope above
+(no existing probability rule was swapped for a cited one); this line
+stays NOT STARTED deliberately, per that entry's own honest framing.)
+
+## Mechanism Engine — pluggable failure-cause framework + ExpiredInstrument (DONE (one slice), 2026-09-04)
+
+Built, outside the numbered Phase sequence (a follow-on task, like Device
+above, not a claim of full Phase 3 or Phase 4 completion): a real,
+pluggable `FailureMechanism` framework (`world/mechanisms.py`) replacing
+the single inline balance check `_maybe_attempt_purchase()` used to have,
+plus ONE new, causally-real mechanism on top of it —
+`ExpiredInstrumentMechanism`, which fails a purchase attempt if the
+payer's `Device` (`world/models.py`) is past its own research-grounded
+validity window (`DEVICE_VALIDITY_PERIOD_DAYS_RANGE`, `world/engine.py`),
+regardless of balance. The framework refactor itself was proven behavior-
+neutral (byte-identical output for the same seed/config, before vs. after,
+`diff -rq` clean) before the new mechanism was added; adding the new
+mechanism deliberately DOES change simulation output (new failure
+category, different transaction counts), as expected and reported
+honestly. 70 tests passing (56 prior + 14 new, `tests/test_mechanisms.py`),
+one existing test (`test_engine.py::test_payment_failure_never_moves_
+money`) deliberately updated with a stated reason (its old blanket
+`balance_before < amount` assertion is no longer true for every
+`payment_failure`, now that a second, balance-independent cause exists).
+This is a genuine slice of BOTH Phase 3's spirit (one new research-
+grounded constant, `DEVICE_VALIDITY_PERIOD_DAYS_RANGE`) and Phase 4's
+spirit (a new mechanism generated causally from agent state — a Device's
+own age — not a fresh coin flip) without completing either phase's full
+originally-scoped work. See `docs/Memory.md`'s "Phase 3" section for full
+design rationale, provenance, real numbers, and honest caveats (notably:
+this is the SECOND of Heimdall's seven real failure categories Truman's
+own mechanism now exercises, `expired`, alongside the pre-existing
+`insufficient_funds` — five remain unmodeled, per `docs/Memory.md`'s own
+list).
+
 ## Phase 4 — Domain events (NOT STARTED)
 
 Payment retries, refunds — generated causally from agent state

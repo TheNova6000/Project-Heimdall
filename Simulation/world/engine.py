@@ -47,6 +47,13 @@ from world.agents.bank import Bank, post_transfer
 from world.agents.merchant import MERCHANT_CATEGORIES, Merchant
 from world.agents.person import Person
 from world.clock import SimClock
+from world.mechanisms import (
+    ExpiredInstrumentMechanism,
+    FailureMechanism,
+    FailureOutcome,
+    InsufficientFundsMechanism,
+    PurchaseAttemptContext,
+)
 from world.models import Account, Community, Device, Event, Household, Organization, Transaction
 
 # ---------------------------------------------------------------------------
@@ -202,6 +209,72 @@ NUM_COMMUNITIES = 5
 # special case.
 DEVICE_HOUSEHOLD_SHARING_FRACTION = 0.3
 
+# ---------------------------------------------------------------------------
+# Phase 3 -- "Mechanism Engine" (docs/Phases.md). Formalizes the ONE failure
+# mechanism Truman had before this phase (an inline balance check) into a
+# real, pluggable framework (world/mechanisms.py's `FailureMechanism`), then
+# adds ONE new, causally-distinct mechanism on top of it
+# (ExpiredInstrumentMechanism). Full design writeup, including the
+# behavior-neutral proof for the framework refactor itself (Part A of this
+# phase's own task, verified BEFORE ExpiredInstrumentMechanism below
+# existed at all), in docs/Memory.md's "Phase 3" section.
+# ---------------------------------------------------------------------------
+
+# RESEARCH-GROUNDED (window length), with a separately-named MODELING
+# ASSUMPTION for how that window is positioned relative to simulated day 0
+# (see below) -- same "qualitative-fact-vs-specific-value" split
+# `_run_settlement`'s own docstring already uses for SETTLEMENT_DELAY_T_
+# PLUS_1. Two independently WebFetched, directly-quoted sources (not a
+# WebSearch-synthesized paraphrase -- same verification discipline
+# docs/Research.md's own citations use) agree real card/instrument validity
+# windows sit in the low-single-digit-years range: WalletHub, "Card
+# Expiration Dates: Everything You Need to Know"
+# (wallethub.com/edu/cc/credit-cards-expiration-date/25566, accessed 2026):
+# "The expiration date on a credit card is usually three to five years
+# after the card is activated" -- corroborated (not identically, since
+# real issuer practice genuinely varies) by Capital One's own issuer-side
+# statement, "Credit Card Expiration Dates: What to Know"
+# (capitalone.com/learn-grow/money-management/credit-card-expiration-and-
+# replacement/, accessed 2026): "Credit cards generally expire after two
+# to four years." This constant's range (3-5 years, in days) is anchored
+# on WalletHub's stated "usual" window -- the more commonly-cited figure,
+# also independently corroborated by this session's initial WebSearch
+# synthesis calling five years "the standard for most major credit cards
+# (Visa, Mastercard, American Express, Discover)" -- with Capital One's
+# lower bound serving as evidence that "somewhere in the low-single-digit-
+# years range" is a real, verified fact about card validity, not an
+# invented one, rather than as a second independent number averaged in.
+#
+# MODELING ASSUMPTION (this part, NOT itself research-derived): this
+# simulation has no real-world-mapped calendar showing when a given device
+# was actually issued relative to simulated day 0, so a device's own
+# residual time-to-expiry AS OF day 0 is drawn uniformly across its full
+# validity window -- the standard renewal-process statistical assumption
+# (if real issuance dates are roughly uniform over time, a snapshot at any
+# fixed point finds residual life uniformly distributed over the validity
+# window). See `_build_world`'s device-assignment pass for where this is
+# actually drawn (`elapsed_days`); no separate named constant exists for
+# it, since it is a distributional CHOICE (uniform), not a numeric range
+# of its own. This is what produces a small, realistic MINORITY of devices
+# expiring during a typical run, rather than either all-or-none.
+DEVICE_VALIDITY_PERIOD_DAYS_RANGE = (1095, 1825)  # 3-5 years, in days
+
+# Ordered, fixed list of FailureMechanisms every purchase attempt is
+# checked against (world/mechanisms.py) -- module-level and stateless (no
+# mechanism draws randomness or holds per-run state), so one shared list
+# instance suffices for every SimulationEngine. Order is causally
+# meaningful, not arbitrary: ExpiredInstrumentMechanism is checked FIRST --
+# a real payment network declines an expired card at the authorization
+# step, before a balance is even consulted -- then
+# InsufficientFundsMechanism. See world/mechanisms.py's
+# ExpiredInstrumentMechanism docstring for the full reasoning. NOT a
+# dynamic-loading plugin registry (this task's explicit instruction) --
+# just a plain, hand-written, reviewable list.
+FAILURE_MECHANISMS: list[FailureMechanism] = [
+    ExpiredInstrumentMechanism(),
+    InsufficientFundsMechanism(),
+]
+
 
 @dataclass
 class SimulationResult:
@@ -310,6 +383,12 @@ class SimulationEngine:
         # pass at the end of _build_world).
         self.devices: list[Device] = []
         self.person_device: dict[str, str] = {}  # person_id -> device_id
+        # Phase 3 ("Mechanism Engine"): device_id -> its Device.expiry_day,
+        # populated in the SAME device-assignment pass as person_device
+        # above (see _build_world). Empty for a run where no device has an
+        # expiry_day set -- see world/mechanisms.py's PurchaseAttemptContext
+        # for how a missing entry (`.get()` returning None) is handled.
+        self.device_expiry_day: dict[str, int] = {}
 
         # Live-Risk-loop support (new -- see "Live-loop support" section
         # below and `block_device()`'s own docstring): a device_id lands in
@@ -554,12 +633,16 @@ class SimulationEngine:
                     sharers.append(pid)
 
             primary_device_id = self.ids.next_device_id()
+            primary_issued_day, primary_expiry_day = self._draw_device_validity()
             primary_device = Device(
                 device_id=primary_device_id,
                 fingerprint=f"fp_{primary_device_id}",
                 owner_person_ids=list(sharers),
+                issued_day=primary_issued_day,
+                expiry_day=primary_expiry_day,
             )
             self.devices.append(primary_device)
+            self.device_expiry_day[primary_device_id] = primary_expiry_day
             for pid in sharers:
                 self.person_device[pid] = primary_device_id
 
@@ -567,12 +650,16 @@ class SimulationEngine:
                 if pid in sharers:
                     continue
                 own_device_id = self.ids.next_device_id()
+                own_issued_day, own_expiry_day = self._draw_device_validity()
                 own_device = Device(
                     device_id=own_device_id,
                     fingerprint=f"fp_{own_device_id}",
                     owner_person_ids=[pid],
+                    issued_day=own_issued_day,
+                    expiry_day=own_expiry_day,
                 )
                 self.devices.append(own_device)
+                self.device_expiry_day[own_device_id] = own_expiry_day
                 self.person_device[pid] = own_device_id
 
         # Phase 2.5 A.4: Communities -- a deliberately inert grouping of
@@ -595,6 +682,27 @@ class SimulationEngine:
                     organization_ids=community_org_ids[i],
                 )
             )
+
+    def _draw_device_validity(self) -> tuple[int, int]:
+        """
+        Phase 3 ("Mechanism Engine"): draw one Device's (issued_day,
+        expiry_day), both simulated-day indices (world/models.py's Device
+        docstring) -- see DEVICE_VALIDITY_PERIOD_DAYS_RANGE's own
+        module-level comment above for the full provenance (research-
+        grounded window length; separately-named modeling-assumption
+        residual-life positioning). Two RNG draws, in a fixed order, every
+        call: `validity_days` (how long this device is valid for, total)
+        then `elapsed_days` (how far into that lifecycle it already is, as
+        of simulated day 0). `elapsed_days` is int()-truncated so it is
+        always strictly less than `validity_days`, guaranteeing
+        `expiry_day > 0` -- every device starts out valid on day 0, by
+        construction, never pre-expired at world-generation time.
+        """
+        validity_days = self.rng.randint(*DEVICE_VALIDITY_PERIOD_DAYS_RANGE)
+        elapsed_days = int(self.rng.uniform(0, validity_days))
+        issued_day = -elapsed_days
+        expiry_day = validity_days - elapsed_days
+        return issued_day, expiry_day
 
     # ------------------------------------------------------------------
     # Run
@@ -997,37 +1105,33 @@ class SimulationEngine:
         timestamp = self._event_timestamp()
         balance_before = bank.balance_of(account_id)
         txn_id = self.ids.next_txn_id()
-        succeeded = post_transfer(
-            bank,
-            account_id,
-            merchant_bank,
-            merchant_pending_account_id,
-            amount,
-            timestamp,
-            description=f"purchase at {merchant.merchant_id}",
-            entry_ids=self._new_entry_pair(),
-            transaction_id=txn_id,
-        )
+        # Phase 3 ("Mechanism Engine"): entry_ids are reserved for this
+        # attempt HERE, unconditionally, in the exact same position they
+        # always were -- used below only if this attempt actually reaches
+        # post_transfer. This preserves the EXACT same ledger_entry id
+        # numbering this code always had: previously, post_transfer's own
+        # `entry_ids` argument was evaluated (and so consumed two
+        # ledger_entry ids) on EVERY call regardless of its return value,
+        # since Python evaluates a call's arguments before the call itself
+        # -- so an insufficient-funds failure already "burned" two
+        # ledger_entry ids that were never posted anywhere, a pre-existing
+        # property of this code, not something this refactor changes (see
+        # docs/Memory.md's "Phase 3" section for the byte-identical proof
+        # this preserves).
+        entry_ids = self._new_entry_pair()
 
-        if succeeded:
-            self._record(
-                transaction_id=txn_id,
-                kind="purchase",
-                timestamp=timestamp,
-                from_id=person.person_id,
-                to_id=merchant.merchant_id,
-                amount=amount,
-                balance_before=balance_before,
-                event_type="purchase_succeeded",
-                device_id=device_id,
-            )
-        else:
-            # THE mechanism this project exists to demonstrate: this
-            # failure is emitted because `post_transfer` just observed
-            # balance_before < amount for THIS agent, on THIS attempt --
+        outcome = self._evaluate_purchase_failure(balance_before, amount, device_id)
+        if outcome is not None:
+            # THE mechanism this project exists to demonstrate, generalized
+            # as of Phase 3: this failure is emitted because a
+            # FailureMechanism (world/mechanisms.py) just observed a real,
+            # causal reason THIS agent's THIS attempt cannot go through --
             # not because a category-level probability was drawn
             # independently of any agent state (contrast PRD.md's
-            # description of financial_system's retry_would_succeed).
+            # description of financial_system's retry_would_succeed). No
+            # post_transfer() call happens for a failed attempt -- no money
+            # moves, no ledger entry is posted, regardless of which
+            # mechanism fired.
             self._record(
                 transaction_id=txn_id,
                 kind="payment_failure",
@@ -1036,9 +1140,76 @@ class SimulationEngine:
                 to_id=merchant.merchant_id,
                 amount=amount,
                 balance_before=balance_before,
-                event_type="purchase_failed",
+                event_type=outcome.event_type,
                 device_id=device_id,
+                extra_payload=outcome.extra_payload,
             )
+            return
+
+        succeeded = post_transfer(
+            bank,
+            account_id,
+            merchant_bank,
+            merchant_pending_account_id,
+            amount,
+            timestamp,
+            description=f"purchase at {merchant.merchant_id}",
+            entry_ids=entry_ids,
+            transaction_id=txn_id,
+        )
+        # Every mechanism in FAILURE_MECHANISMS already cleared this
+        # attempt -- in particular, InsufficientFundsMechanism confirmed
+        # has_sufficient_balance(balance_before, amount), the EXACT SAME
+        # predicate post_transfer() itself checks (world/agents/bank.py) --
+        # so post_transfer succeeding here is not a coincidence, it is what
+        # the framework just promised. A False would mean
+        # has_sufficient_balance() and post_transfer's own check have
+        # drifted apart -- a real bug, not a legitimate runtime outcome --
+        # hence an assertion, not a handled branch (same pattern
+        # _post_and_record_leg already uses for its own pre-checked
+        # post_transfer call).
+        assert succeeded, (
+            f"post_transfer failed for {txn_id} despite FAILURE_MECHANISMS reporting no failure -- "
+            "has_sufficient_balance() and post_transfer's own check have drifted apart"
+        )
+        self._record(
+            transaction_id=txn_id,
+            kind="purchase",
+            timestamp=timestamp,
+            from_id=person.person_id,
+            to_id=merchant.merchant_id,
+            amount=amount,
+            balance_before=balance_before,
+            event_type="purchase_succeeded",
+            device_id=device_id,
+        )
+
+    def _evaluate_purchase_failure(
+        self, balance_before: float, amount: float, device_id: str
+    ) -> FailureOutcome | None:
+        """
+        Phase 3 ("Mechanism Engine"): run FAILURE_MECHANISMS, in order,
+        against this purchase attempt -- return the first FailureOutcome
+        that fires, or None if every mechanism clears it. `device_expiry_
+        day` is resolved here (self.device_expiry_day, populated at
+        world-generation time -- see _build_world's device-assignment
+        pass) rather than by the caller, since it's engine-owned state a
+        FailureMechanism is never given direct access to
+        (world/mechanisms.py's PurchaseAttemptContext carries only the
+        already-resolved value, never an engine reference -- Architecture.
+        md's "no hidden global state" principle, applied to this framework).
+        """
+        ctx = PurchaseAttemptContext(
+            balance_before=balance_before,
+            amount=amount,
+            day=self.clock.day,
+            device_expiry_day=self.device_expiry_day.get(device_id),
+        )
+        for mechanism in FAILURE_MECHANISMS:
+            outcome = mechanism.check(ctx)
+            if outcome is not None:
+                return outcome
+        return None
 
     # -- shared recording helpers --------------------------------------------
     def _new_entry_pair(self) -> tuple[str, str]:
@@ -1072,6 +1243,7 @@ class SimulationEngine:
         device_id: str = "",
         retried_from: str = "",
         blocked_device: bool = False,
+        extra_payload: dict[str, object] | None = None,
     ) -> None:
         # Phase 2: transaction_id is now generated by the caller (before
         # this is invoked), not here -- callers need the id up front to
@@ -1106,6 +1278,17 @@ class SimulationEngine:
         # Transaction dataclass, only ever added to the Event's own
         # `payload` JSON when a caller actually passes blocked_device=True
         # (only _maybe_attempt_purchase()'s device-blocked branch does).
+        #
+        # extra_payload (new -- Phase 3, "Mechanism Engine": see world/
+        # mechanisms.py's FailureOutcome and _evaluate_purchase_failure
+        # above) is the GENERALIZED form of the same retried_from/
+        # blocked_device discipline: a FailureMechanism decides its own
+        # payload marker(s) rather than this method hardcoding one kwarg
+        # per mechanism, since the whole point of a pluggable framework is
+        # that this method shouldn't need a new named parameter every time
+        # a new mechanism is added. Defaults to None (no change to any
+        # existing call site's payload); merged into payload_fields below
+        # only when a caller actually passes a non-empty dict.
         txn = Transaction(
             transaction_id=transaction_id,
             timestamp=timestamp,
@@ -1133,6 +1316,8 @@ class SimulationEngine:
             payload_fields["retried_from"] = retried_from
         if blocked_device:
             payload_fields["blocked_device"] = True
+        if extra_payload:
+            payload_fields.update(extra_payload)
         payload = json.dumps(payload_fields, sort_keys=True)
         self.events.append(
             Event(

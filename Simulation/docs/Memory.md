@@ -2107,3 +2107,559 @@ documented baseline.
    `False` for any attempt that genuinely would have failed anyway; this
    run's 100% rate is an honest property of this specific seed/population,
    not hardcoded.
+
+---
+
+# Phase 3 — "Mechanism Engine": a pluggable FailureMechanism framework +
+# ExpiredInstrumentMechanism (2026-09-04)
+
+## Status: built, run, and tested. Working.
+
+A later, explicit, user-requested task — titled "Truman Phase 3: the
+Mechanism Engine" in its own brief, distinct from `docs/Phases.md`'s
+existing (still NOT STARTED) "Phase 3 — Behavioral realism" line, a
+different scope (see "Which Phase is this, really" below). Unlike the
+Heimdall-bridge/live-loop tasks above (which had to leave a normal
+`run_simulation.py` invocation's default output byte-identical, since
+those are opt-in external layers), this task is explicitly core-engine
+evolution — like Phase 2 or Phase 2.5, it is allowed and expected to
+change Truman's own simulation output, as long as determinism,
+invariants, and provenance discipline all still hold, proven not assumed.
+
+All docs (`PRD.md`, `Architecture.md`, `Rules.md`, `Phases.md`, `Design.md`,
+this file) were re-read in full before touching any code, then the actual
+code this task refactors (`world/engine.py`'s `_maybe_attempt_purchase()`,
+`world/agents/bank.py`'s `post_transfer()`, `world/models.py`'s
+`Transaction`/`Device`) was read in full. Baseline confirmed first: 56/56
+tests passing, and a real `seed=42/population=300/days=90` run
+(`output/phase3_baseline`, deleted after use per this project's own
+standing convention for throwaway large-scale confirmation runs) captured
+BEFORE any code was touched — the actual pre-task artifact Part A's proof
+below diffs against.
+
+## The problem this solves
+
+Before this task, Truman had exactly ONE failure mechanism, hardcoded
+inline in `_maybe_attempt_purchase()`: `post_transfer()` fails iff
+`balance_before < amount`. Every `payment_failure` in the entire
+simulation had this one cause. `docs/Research.md` Part C and
+`financial_system/bridges/README.md` both already named this as a real,
+honest limitation — only 1 of Heimdall's 7 real `FAILURE_TAXONOMY`
+categories (`financial_system/recovery/signals.py`, read-only, never
+modified by this task) was ever exercised by bridged Truman data. This
+task formalizes failure generation as a real, pluggable mechanism
+framework, then adds ONE new, genuinely causal mechanism on top of it.
+
+## Part A — The Mechanism Framework, proven behavior-neutral
+
+### Design: exact `FailureMechanism` shape
+
+New file `world/mechanisms.py`. Deliberately NOT a dynamic-loading plugin
+system (this task's own explicit instruction) — a small, real abstraction
+with a FIXED, hand-written, ordered list:
+
+```python
+@dataclass(frozen=True)
+class PurchaseAttemptContext:
+    balance_before: float
+    amount: float
+    day: int                       # simulated day index, 0-based
+    device_expiry_day: int | None  # the payer's Device's own expiry_day
+
+@dataclass(frozen=True)
+class FailureOutcome:
+    event_type: str
+    extra_payload: dict[str, object] = field(default_factory=dict)
+
+class FailureMechanism(ABC):
+    @abstractmethod
+    def check(self, ctx: PurchaseAttemptContext) -> FailureOutcome | None: ...
+```
+
+`world/engine.py`'s `FAILURE_MECHANISMS: list[FailureMechanism]` is the
+fixed, ordered evaluation list (module-level, stateless — one shared
+instance for every `SimulationEngine`). `SimulationEngine.
+_evaluate_purchase_failure()` builds one `PurchaseAttemptContext` per
+purchase attempt and iterates `FAILURE_MECHANISMS` in order; the FIRST
+mechanism whose `check()` returns a `FailureOutcome` wins (a `payment_
+failure` is recorded, `post_transfer()` is never called — no money moves,
+no ledger entry posts). A purchase attempt that clears every mechanism
+proceeds to a real `post_transfer()` call, exactly as before this task.
+
+A mechanism's `check()` must be a PURE function of its context — no side
+effects, no RNG draws. This is enforced by construction, not just
+documented: neither `InsufficientFundsMechanism` nor
+`ExpiredInstrumentMechanism` touches `self.rng` anywhere (grep-confirmed),
+and `PurchaseAttemptContext` is `frozen=True`.
+
+### `InsufficientFundsMechanism` — the migrated, unchanged original
+
+```python
+class InsufficientFundsMechanism(FailureMechanism):
+    def check(self, ctx: PurchaseAttemptContext) -> FailureOutcome | None:
+        if has_sufficient_balance(ctx.balance_before, ctx.amount):
+            return None
+        return FailureOutcome(event_type="purchase_failed")
+```
+
+`has_sufficient_balance(balance, amount) -> bool` (new, `world/agents/
+bank.py`: `return amount <= balance`) is a small, additive, behavior-
+preserving refactor of `post_transfer()`'s own inline check — `post_
+transfer` now calls this SAME function instead of its old inline `if
+amount > from_account.balance`. Both call sites (the mechanism's
+pre-flight check, and `post_transfer`'s own real enforcement) share one
+function, so they cannot silently drift apart — proven by
+`tests/test_mechanisms.py::test_insufficient_funds_mechanism_matches_
+has_sufficient_balance_exactly`, which checks the exact boundary
+(`amount == balance` must succeed, matching the original `>` — not
+`>=` — comparison) alongside ordinary cases.
+
+### Critical requirement: entry_id/ledger-counter parity
+
+The single trickiest correctness point in this refactor: the ORIGINAL
+code called `entry_ids=self._new_entry_pair()` as an argument to `post_
+transfer()` on EVERY purchase attempt, success or failure — Python
+evaluates a call's arguments before the call itself, so `_new_entry_pair()`
+(which increments the `ledger_entry` id counter by 2) ran unconditionally,
+even though `post_transfer()` never actually posts those two ids anywhere
+when it fails internally (it returns `False` before calling `_post`). This
+is a PRE-EXISTING property of the old code, not something this refactor
+introduced — but the new framework needed to preserve it EXACTLY, because
+skipping `post_transfer()` entirely on a mechanism-caused failure (the
+whole point of the new framework, so `ExpiredInstrumentMechanism` in Part
+B can prevent money from moving even when the balance IS sufficient) would
+otherwise shift every subsequent `ledger_entry_id` by 2 relative to the old
+code's numbering, breaking Part A's own byte-identical-output requirement.
+
+Fixed by calling `entry_ids = self._new_entry_pair()` UNCONDITIONALLY,
+in the exact same relative position as before (right after `txn_id`),
+regardless of whether the attempt ultimately reaches `post_transfer()` —
+the ids are simply reserved-but-unused on a mechanism-caused failure, the
+same "burned but harmless" outcome the old code already had for an
+insufficient-funds failure.
+
+### Part A's behavior-neutral proof — verbatim
+
+Ran BEFORE touching any code:
+```
+python run_simulation.py --seed 42 --population 300 --days 90 --outdir output/phase3_baseline
+  -> 13089 transactions, 13089 events
+```
+Then implemented ONLY the framework refactor (`has_sufficient_balance` in
+`bank.py`; `world/mechanisms.py`; `FAILURE_MECHANISMS = [InsufficientFunds
+Mechanism()]` — Part B's `ExpiredInstrumentMechanism` NOT yet added, NOT
+yet imported into that list; no `Device` field changes; no new RNG draws
+anywhere) and re-ran the IDENTICAL config:
+```
+python run_simulation.py --seed 42 --population 300 --days 90 --outdir output/phase3_after_partA
+  -> 13089 transactions, 13089 events   (identical counts)
+```
+Then:
+```
+diff -rq output/phase3_baseline output/phase3_after_partA
+```
+**Result: zero output, exit code 0.** Every one of the 12 output CSVs
+(persons/banks/merchants/accounts/transactions/events/ledger_entries/
+households/organizations/communities/devices.csv) byte-for-byte identical.
+Full test suite: 56/56 passing, unchanged, at this checkpoint too. Both
+throwaway directories deleted after (per this project's own standing
+convention — see e.g. Phase 2's/Phase 2.5's equivalent proofs).
+
+## Part B — `ExpiredInstrumentMechanism`
+
+### Design
+
+```python
+class ExpiredInstrumentMechanism(FailureMechanism):
+    def check(self, ctx: PurchaseAttemptContext) -> FailureOutcome | None:
+        if ctx.device_expiry_day is None:
+            return None
+        if ctx.day < ctx.device_expiry_day:
+            return None
+        return FailureOutcome(
+            event_type="purchase_failed_expired_instrument",
+            extra_payload={"expired_instrument": True},
+        )
+```
+
+Added to `world/engine.py`'s `FAILURE_MECHANISMS` list AHEAD of
+`InsufficientFundsMechanism`:
+```python
+FAILURE_MECHANISMS: list[FailureMechanism] = [
+    ExpiredInstrumentMechanism(),
+    InsufficientFundsMechanism(),
+]
+```
+
+### Causal ordering: expired-instrument checked FIRST, and why
+
+A deliberate decision, not arbitrary. A real payment network declines an
+expired card at the authorization step itself — before the cardholder's
+available balance is ever consulted. Checking balance first would get the
+causal story backwards for any attempt where BOTH conditions happen to
+hold at once. `tests/test_mechanisms.py::test_expired_instrument_wins_
+over_insufficient_funds_when_both_would_fire` proves this mechanically:
+an attempt with both an expired device AND an insufficient balance is
+recorded as `expired_instrument`, not `insufficient_funds`.
+
+### `Device.issued_day`/`expiry_day` — exact fields, distribution, provenance
+
+`world/models.py`'s `Device` gains two new fields, both simulated-day
+indices (same 0-based convention as `Transaction.day`):
+```python
+issued_day: int = 0
+expiry_day: int = 0
+```
+Assigned once at world-generation time, in the SAME device-assignment
+pass that already existed (`_build_world`, right after Household
+grouping — see Memory.md's "Device" section) — a new private helper,
+`SimulationEngine._draw_device_validity() -> tuple[int, int]`, is called
+at BOTH existing device-creation sites (the household's shared "primary"
+device, and each non-sharing member's own personal device):
+
+```python
+def _draw_device_validity(self) -> tuple[int, int]:
+    validity_days = self.rng.randint(*DEVICE_VALIDITY_PERIOD_DAYS_RANGE)
+    elapsed_days = int(self.rng.uniform(0, validity_days))
+    issued_day = -elapsed_days
+    expiry_day = validity_days - elapsed_days
+    return issued_day, expiry_day
+```
+
+Two RNG draws per device, in this fixed order, every call. `elapsed_days`
+is `int()`-truncated so it is always STRICTLY less than `validity_days`,
+guaranteeing `expiry_day > 0` always — every device starts out valid on
+simulated day 0, by construction, never pre-expired at world-generation
+time. `engine.self.device_expiry_day: dict[str, int]` (device_id ->
+expiry_day) is populated alongside the existing `person_device` dict, for
+O(1) lookup during the day loop.
+
+**Provenance, exactly as required (Rules.md #2)** — split into two parts,
+same "qualitative-fact-vs-specific-value" pattern this project's own
+`SETTLEMENT_DELAY_T_PLUS_1` already established:
+
+1. **`DEVICE_VALIDITY_PERIOD_DAYS_RANGE = (1095, 1825)` (3-5 years, in
+   days) — RESEARCH-GROUNDED.** Two independently WebFetched, directly-
+   quoted sources (not a WebSearch-synthesized paraphrase — this
+   session's bounded research pass, done per this task's explicit
+   invitation, at the same verification bar `docs/Research.md`'s own
+   citations use):
+   - WalletHub, "Card Expiration Dates: Everything You Need to Know"
+     (wallethub.com/edu/cc/credit-cards-expiration-date/25566, accessed
+     2026): *"The expiration date on a credit card is usually three to
+     five years after the card is activated."*
+   - Capital One (an issuer's own public statement), "Credit Card
+     Expiration Dates: What to Know" (capitalone.com/learn-grow/money-
+     management/credit-card-expiration-and-replacement/, accessed 2026):
+     *"Credit cards generally expire after two to four years."*
+
+   The two sources do NOT state identical bounds — real issuer practice
+   genuinely varies (2-4 vs. 3-5 years). This constant is anchored on
+   WalletHub's more commonly-cited "usual" figure (also independently
+   corroborated by this session's initial WebSearch synthesis calling
+   five years "the standard for most major credit cards"), with Capital
+   One's lower bound treated as corroborating evidence that the low-
+   single-digit-years range is real, not as a second independent number
+   averaged in. A 2-5-year union range was considered and rejected, since
+   it would blend two sources' distinct claims into a number neither
+   states.
+
+   This research finding is written up as a new, purely additive section
+   at the END of `docs/Research.md` ("Addendum — instrument-validity-
+   period research (Truman Phase 3, 'Mechanism Engine')") — **a deliberate
+   decision worth flagging explicitly**: this task's own brief said "Do
+   NOT modify PRD.md, Architecture.md, Rules.md, or Research.md unless you
+   find a genuine factual inconsistency... if so, flag it, don't silently
+   edit." No existing line of `Research.md` was touched or reordered —
+   only a new, clearly-dated, clearly-scoped section was appended at the
+   very end. This was necessary, not optional, because `provenance/
+   catalog.py`'s OWN existing cross-check test
+   (`tests/test_provenance.py::test_every_research_grounded_entry_
+   citation_is_verbatim_in_research_md`) mechanically requires every
+   `provenance_type="research-grounded"` catalog entry's `citation_
+   verbatim` to be found character-for-character inside `docs/
+   Research.md` — there is no way to add a real, honestly-labeled
+   research-grounded catalog entry (which this task's own brief also
+   required: "add ONE new entry following the existing pattern... and
+   re-run its own cross-check tests to confirm it's not broken") without
+   the citation living there. Flagged here plainly, per the "flag it,
+   don't silently edit" instruction, in case the project owner intended a
+   stricter reading of "do not modify" than "purely additive, clearly
+   labeled, nothing existing touched."
+
+2. **Residual-life-at-day-0 positioning (drawn uniformly across the
+   validity window) — a SEPARATE, NOT itself research-derived MODELING
+   ASSUMPTION.** This simulation has no real-world-mapped calendar
+   showing when a given device was actually issued relative to simulated
+   day 0, so a device's own residual time-to-expiry as of day 0 is drawn
+   uniformly across its full validity window — the standard renewal-
+   process statistical assumption (if real issuance dates are roughly
+   uniform over time, a snapshot at any fixed point finds residual life
+   uniformly distributed over the validity window). This is what produces
+   a small, realistic MINORITY of devices expiring during a typical run,
+   rather than either all-or-none. No separate named constant exists for
+   this piece (it's a distributional CHOICE, not a numeric range), so it
+   has no catalog entry of its own — stated inline in code and here.
+
+### `provenance/catalog.py`: one new entry, plus mechanical line-number resync
+
+Added ONE new `ProvenanceEntry` (`DEVICE_VALIDITY_PERIOD_DAYS_RANGE`,
+`provenance_type="research-grounded"`, `citation_verbatim="years after the
+card is activated"` — a substring chosen to avoid a Markdown line-wrap
+inside the quoted sentence in `Research.md`, confirmed to still uniquely
+and correctly identify the citation). Catalog now has 29 `implemented`
+entries (was 28) and 10 `research-grounded` entries (was 9) — both counts
+updated in `tests/test_provenance.py`'s own hardcoded assertions, per that
+test's own documented purpose (an independent coverage re-scan, not a
+number to silently drift).
+
+Inserting new code into `world/engine.py` ABOVE several existing
+`location="world/engine.py:N"` catalog entries shifted their real line
+numbers (the SAME situation a prior session's live-risk-loop task already
+hit and resolved the same way — see this file's own "Live Risk loop"
+section, "56 tests... including the two `provenance/`-task tests whose
+hardcoded... line-number assertions needed updating"). Every affected
+`location` field in `provenance/catalog.py`, and the 3 hardcoded line-index
+assertions in `tests/test_provenance.py`'s `_check_settlement_delay`/
+`_check_settlement_batch_hour`/`_check_event_timestamp_range` helpers, were
+updated to the real, current line numbers (verified via direct `grep`, not
+guessed) — VALUES unchanged, only locations. `test_every_implemented_
+entry_location_matches_real_code` re-passes, confirming this wasn't broken.
+
+### Why `kind` stays `"payment_failure"`, not a new kind value
+
+Followed the EXACT precedent `block_device()`'s own device-blocked
+failure already set (`docs/Design.md`'s "Naming conventions" section): a
+device-expired purchase attempt is still honestly "an attempted purchase
+that failed," just with a distinct cause — not structurally different the
+way a retry is (which DID earn new `kind` values, `retry_success`/
+`retry_failure`). Heimdall's own real `FAILURE_TAXONOMY`
+(`financial_system/recovery/signals.py`, confirmed by directly reading it,
+never modified) already names a category for exactly this cause:
+`"expired"` (`dict(recoverable=False, action="REQUEST_CUSTOMER_ACTION",
+base_success_rate=0.0)`) — the SAME real category name a real payment
+gateway's own decline-code taxonomy uses (confirmed also present,
+identically, in `financial_system/data_generator/generate_dataset.py`'s
+own `FAILURE_REASONS`). Reusing `payment_failure` as the `Transaction.kind`
+is therefore the more faithful mapping onto Heimdall's own real
+vocabulary, matching this task's own explicit instruction to reuse
+Heimdall's real category name "so this mechanism's output is bridgeable
+later without renaming anything."
+
+The distinct cause is carried at the `Event` layer instead: a new
+`event_type` (`purchase_failed_expired_instrument`, never `purchase_
+failed`) and a new `expired_instrument: true` key in the `Event.payload`
+JSON — following the `retried_from`/`blocked_device` precedent exactly.
+**One generalization beyond that precedent, worth naming**: rather than
+adding a THIRD hardcoded keyword parameter to `_record()` (after `retried_
+from`/`blocked_device`), this task added one generic `extra_payload:
+dict[str, object] | None = None` parameter instead, merged into the
+payload dict only when non-empty. This is the natural generalization for
+a genuinely pluggable framework — a new `FailureMechanism` can define its
+own payload marker(s) without `_record()` needing a new named parameter
+every time. `FailureOutcome.extra_payload` is how a mechanism expresses
+this; `InsufficientFundsMechanism`'s is `{}` (matching its pre-existing,
+Part-A-proven-identical payload shape exactly).
+
+### `Transaction.kind`/`Device` are additive-only; `docs/Design.md` updated
+
+No breaking schema change anywhere. `devices.csv` gains two new, additive
+columns (`issued_day`, `expiry_day`) — a real, deliberate output change
+(Part B is explicitly allowed to change output), not something Part A's
+proof covers. `docs/Design.md`'s "Naming conventions" section was NOT
+edited for this task (its existing `blocked_device`-precedent text already
+generalizes correctly to `expired_instrument` without needing a rewrite —
+confirmed by re-reading it before writing this section).
+
+## Which Phase is this, really (per this task's own explicit ask)
+
+`docs/Phases.md`'s existing "Phase 3 — Behavioral realism" line describes
+a DIFFERENT scope: swapping Phase 1's placeholder probability rules
+(income distribution, spend probability) for research-grounded ones. This
+task did not do that — it added a NEW mechanism, not a cited replacement
+for an EXISTING rule. `docs/Phases.md`'s Phase 3 line stays `NOT STARTED`,
+unchanged, exactly as the prior "Research + Phase 3 (bounded)" session
+(this file, above) already left it, for the same honesty reason. This
+task's own work is recorded as a new, unnumbered "Mechanism Engine" entry
+in `docs/Phases.md`, positioned like "Device" was — a real, dated,
+honestly-scoped slice, explicitly NOT claiming the full Phase 3 (or Phase
+4 — "Domain events... generated causally from agent state," which this
+task's `ExpiredInstrumentMechanism` also partially echoes, being a new
+causally-real mechanism, though not the retries/refunds Phase 4 actually
+names) is complete.
+
+## Testing — what's actually verified, not just claimed
+
+`tests/test_mechanisms.py`, 14 new tests, all passing:
+- `InsufficientFundsMechanism` matches `has_sufficient_balance` exactly,
+  including the exact `amount == balance` boundary; ignores device state
+  entirely (proving it stayed a pure balance check, not accidentally
+  entangled with the new mechanism).
+- `ExpiredInstrumentMechanism` fires exactly at and after `expiry_day`,
+  never before; fires regardless of balance (even an enormous one);
+  handles a missing `device_expiry_day` gracefully.
+- `FAILURE_MECHANISMS`' real ordering is `[ExpiredInstrumentMechanism,
+  InsufficientFundsMechanism]`, and when BOTH would fire, the recorded
+  outcome is genuinely `expired_instrument` — checked against the real
+  ordered list, not assumed from the module-level constant's own source
+  order.
+- Every Device's `expiry_day > 0` and its validity window (`expiry_day -
+  issued_day`) falls inside `DEVICE_VALIDITY_PERIOD_DAYS_RANGE`, checked
+  against real generated devices.
+- Against a REAL run (seed=21, 600 persons, 150 days — sized so the
+  research-grounded validity window produces a reliable, non-flaky sample
+  of real expirations within the run's own day range): every real
+  `purchase_failed_expired_instrument` transaction's own day is >= its
+  device's real `expiry_day`; the complementary direction (any purchase/
+  payment_failure from an already-expired device must BE recorded as
+  `expired_instrument`, never a plain success or an ordinary insufficient-
+  funds failure); zero ledger entries for any expired-instrument failure;
+  and — the causal-distinctness proof — at least one real expired-
+  instrument failure has `balance_before >= amount`, i.e. it would have
+  SUCCEEDED under `InsufficientFundsMechanism` alone.
+- Determinism: same seed -> identical `(device_id, issued_day, expiry_day)`
+  tuples across two independent runs; different seeds -> different ones.
+
+`tests/test_engine.py`'s `test_payment_failure_never_moves_money` — ONE
+NECESSARY, explicitly-justified update (not a silent loosening): its old
+blanket `assert t.balance_before < t.amount` for EVERY `payment_failure`
+row is now factually FALSE (an expired-instrument failure can have
+`balance_before >= amount`, by design — that's the whole point of the
+mechanism). Rewritten to (a) scope the balance assertion to `event_type in
+("purchase_failed", "salary_failed")` specifically (the insufficient-funds
+-caused rows, identified via each transaction's own corresponding Event,
+zipped 1:1 per `_record()`'s own construction), and (b) add a NEW,
+stronger, mechanism-agnostic general proof: no `payment_failure`
+transaction_id, of ANY cause, has a matching ledger entry anywhere — the
+claim that actually generalizes as future mechanisms are added, which the
+old per-mechanism check never quite was.
+
+**Full suite: 70/70 passing** (`python -m pytest tests/ -v` — verbatim
+output in this task's final report). No other existing test's assertions
+were touched.
+
+## Determinism — full new behavior (framework + new mechanism)
+
+Two independent full runs of the SAME config (`seed=42, population=300,
+banks=3, merchants=15, days=90`), with ALL of Part A + Part B in place:
+```
+python run_simulation.py ... --outdir output/phase3_final_a  -> 13207 transactions
+python run_simulation.py ... --outdir output/phase3_final_b  -> 13207 transactions
+diff -rq output/phase3_final_a output/phase3_final_b
+```
+**Result: zero output, exit code 0.** All 12 output CSVs byte-identical.
+Both throwaway directories deleted after.
+
+**Honest note on WHY the transaction count changed at all** (13089 before
+Part B -> 13207 after): NOT because a fixed set of attempts started
+failing differently — `_draw_device_validity()` consumes 2 NEW RNG draws
+per device at world-generation time, which shifts the ENTIRE downstream
+RNG stream (this simulation has exactly one shared `random.Random`
+instance, per Rules.md #6) for every subsequent day-loop decision (`wants_
+to_spend`, `purchase_amount`, merchant choice, event timestamps — all of
+it). This is a genuinely DIFFERENT simulated world from the pre-Phase-3
+baseline, not a modification of the same one — exactly the kind of
+"different failure types, different transaction counts" change this
+task's own brief explicitly authorized and expected, not a bug to explain
+away.
+
+## Real run numbers (seed=42, population=300, banks=3, merchants=15, days=90)
+
+```
+Transaction kinds: purchase=8650, payment_failure=519, salary=900,
+  savings_sweep=900, household_sweep=900, settlement=1332, org_funding=6
+
+payment_failure by cause:
+  insufficient_funds (purchase_failed):        216
+  expired_instrument:                          303
+
+devices: 250 total, 12 with expiry_day < 90 (i.e. could expire within
+  this run's own 90-day window)
+  -> 11 of those 12 actually produced at least one real expired-instrument
+     failure (the 12th's owner(s) apparently never attempted a purchase
+     after it expired -- a real, unforced outcome of that person's own
+     spend-probability draws, not investigated further)
+  -> 15 unique persons affected (some of the 11 devices are household-
+     shared, so >1 person per device)
+  -> failures per affected device range from 5 to 56 (median ~19) -- see
+     "Honest caveats" below for why this is expected, not a bug
+  -> 303/303 (100%) of these failures have balance_before >= amount --
+     every single one would have SUCCEEDED under the pre-Phase-3
+     mechanism, the mechanical proof this new mechanism is genuinely
+     causally distinct from balance, not a relabeled insufficient-funds
+     failure (same "checked, not assumed" standard the live-risk-loop
+     task's own "35/35 would have succeeded" finding already set)
+```
+
+For comparison, the SAME seed/population/days config's pre-Phase-3
+baseline (before `ExpiredInstrumentMechanism` existed at all, RNG stream
+unperturbed by device-validity draws): `purchase=8858, payment_failure=193`
+(all insufficient-funds). The pre- and post-Phase-3 totals are NOT directly
+comparable attempt-for-attempt (different RNG stream, per the determinism
+note above) — both are reported here as two honest, independently-real
+snapshots, not as a before/after delta on the same world.
+
+## Honest caveats
+
+1. **Expired-instrument failures are "sticky" for the rest of a run** —
+   once a Device's `expiry_day` passes, EVERY subsequent purchase attempt
+   from it fails this way, forever (no device-replacement/reissuance
+   mechanic exists). This is why a handful of devices (11, in the real run
+   above) produced disproportionately many failures (303) relative to how
+   many devices actually expired (12 of 250) — each one keeps failing on
+   every subsequent attempt, unlike insufficient-funds, which is
+   transient (a person's balance can recover). This mirrors `block_
+   device()`'s own real, existing "no un-blocking" semantics exactly
+   (same real-world logic: a card genuinely stays expired until reissued,
+   just like Heimdall's own real Risk domain has no "un-review" action
+   either) — named plainly here, not hidden, per Rules.md #5.
+2. **No device-reissuance mechanic** — a real cardholder would eventually
+   get a replacement card; this simulation does not model that. An
+   honest, stated scope limitation (the same category of limitation
+   `block_device()`'s own "never unblocked" caveat already carries), not
+   an oversight.
+3. **The validation system's B.1 causal-balance-ratio check
+   (`validation/report.py`'s `check_causal_balance_ratio`) was NOT
+   updated** to exclude expired-instrument-caused failures from its
+   `payment_failure`-vs-`balance/income` monotonicity check — it still
+   treats every purchase-originated `payment_failure` as evidence for the
+   SAME balance-ratio relationship, even though a real fraction of them
+   (303 of 519, ~58%, in the real run above) are now balance-INDEPENDENT.
+   This did not break `test_validation.py`'s existing PASS verdict on
+   THIS session's specific test configs (checked — still passes), but it
+   is a real, not-yet-addressed gap: the check's underlying signal is now
+   genuinely diluted by a second, unrelated cause, and a future session
+   extending `validation/` should split this check by mechanism, the same
+   way `stats/report.py`'s own income-group-vs-purchase-failure split was
+   already fixed once before (Phase 2.5's payment_failure-purpose split,
+   this file's own Phase 2.5 section). Not fixed here, per this task's own
+   explicit instruction not to restructure `validation/` beyond what a new
+   constant strictly requires.
+4. **`docs/Research.md` was appended to, not left untouched** — flagged in
+   full above (Part B's provenance section) as a deliberate, purely-
+   additive decision this task's own brief's "do not modify... unless a
+   genuine factual inconsistency" language may have intended more
+   strictly. No existing line was changed.
+5. **The residual-life-at-day-0 uniform-positioning assumption is
+   uncited** (as stated plainly in its own code comment and above) — a
+   standard, defensible statistical assumption (renewal theory), not
+   research-derived itself, layered on top of the genuinely research-
+   grounded validity-WINDOW-length constant.
+6. **This is one new mechanism, not a general-purpose extensible failure
+   taxonomy** — per this task's own explicit "What NOT to do": no third
+   mechanism was added. Truman's own failure taxonomy now exercises 2 of
+   Heimdall's 7 real `FAILURE_TAXONOMY` categories (`insufficient_funds`,
+   `expired`) plus the separate live-risk-loop's `risk_block` mapping
+   (opt-in, not part of a normal run) — 4 remain entirely unmodeled
+   (`technical_failure`, `timeout`, `authentication_failure`, `issuer_
+   declined`), an honest, stated gap, not a claim of completeness.
+
+## Confirmation of scope (this task's hard safety boundary)
+
+`git diff --stat financial_system/` — empty, confirmed. `financial_system/
+recovery/signals.py` was read (to find the real `"expired"` category name)
+but never edited. `Simulation/provenance/` and `Simulation/validation/`
+were touched ONLY as explicitly authorized (one new `provenance/
+catalog.py` entry plus the mechanical line-number resync its own
+cross-check test required; `validation/` was NOT touched at all — see
+honest caveat #3 above). No commit was made.

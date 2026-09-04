@@ -231,6 +231,21 @@ class Device:
     or other cross-household sharing mechanism exists anywhere in this
     simulation (explicitly out of scope; see docs/Research.md Part C.1 and
     docs/Memory.md's "Device" section).
+
+    `issued_day`/`expiry_day` (Phase 3, "Mechanism Engine" -- see
+    docs/Memory.md's "Phase 3" section and world/mechanisms.py's
+    `ExpiredInstrumentMechanism`) are simulated-day indices, the SAME
+    0-based convention as `Transaction.day`, assigned once at world-
+    generation time from `world/engine.py`'s
+    `DEVICE_VALIDITY_PERIOD_DAYS_RANGE`. `issued_day` is typically
+    NEGATIVE -- a device is modeled as already existing, somewhere in its
+    own multi-year lifecycle, when the simulated world begins on day 0,
+    not as freshly issued at world-generation time -- and `expiry_day =
+    issued_day + validity_period_days` is always > 0 by construction (see
+    `_build_world`'s device-assignment pass), i.e. every device starts out
+    valid on day 0; some devices' `expiry_day` falls within a typical
+    run's own day range, which is exactly what makes
+    `ExpiredInstrumentMechanism` genuinely, non-trivially reachable.
     """
 
     device_id: str
@@ -238,6 +253,8 @@ class Device:
     # hardware fingerprint algorithm, just a stand-in identity string
     # (Simulation has no device-hardware model at all)
     owner_person_ids: list[str]
+    issued_day: int = 0
+    expiry_day: int = 0
 
 
 @dataclass

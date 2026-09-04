@@ -31,8 +31,11 @@ from financial_system.reconciliation.deterministic import reconcile_settlement
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
 from financial_system.recovery.signals import compute_recovery_signals
 from financial_system.risk.risk_agent import run_risk_for_device
+from financial_system.risk.runner import devices_with_sharers
 from financial_system.risk.scoring import risk_tier, score_signals
 from financial_system.risk.signals import compute_device_risk_signals
+
+from api.truman_env import get_environment
 
 GRAPH_DB_PATH = Path(__file__).resolve().parent.parent / "financial_system" / "data" / "financial_graph.db"
 
@@ -241,6 +244,101 @@ def investigate(subject_type: str, subject_id: str):
                     "result": json.loads(prefilled.model_dump_json()),
                     "degraded_reason": f"4B raised {type(e).__name__}: {e}"}
         return {"triggered": True, "result": json.loads(result.model_dump_json())}
+    finally:
+        g.close()
+
+
+# ---------------------------------------------------------------------------
+# Truman environment: one real, server-held SimulationEngine, advanced one
+# real day at a time. Every endpoint below queries or ticks the SAME live
+# world (api/truman_env.py) -- nothing here is a second, fabricated dataset.
+# Ephemeral: this environment resets to day 0 whenever the server process
+# restarts (a Render free-tier redeploy, a cold-start after idling). That is
+# a real, stated property of an in-memory demo environment, not a bug.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/truman/state")
+def truman_state():
+    env = get_environment()
+    g = env.graph()
+    try:
+        rows = g._conn.execute(
+            "SELECT node_id, properties FROM graph_nodes WHERE node_type='Payment'"
+        ).fetchall()
+        failed_payments = sorted(
+            row["node_id"] for row in rows
+            if json.loads(row["properties"]).get("status") == "failed"
+        )
+        eligible_devices = devices_with_sharers(g)
+    finally:
+        g.close()
+    return {
+        "day": env.day, "max_days": env.engine.num_days,
+        "seed": env.engine.seed, "population": env.engine.num_persons,
+        "total_transactions": len(env.engine.transactions),
+        "failed_payments": failed_payments,
+        "eligible_devices": eligible_devices,
+        "blocked_devices": sorted(env.blocked_devices),
+        "recent_log": env.log[-10:],
+    }
+
+
+@app.post("/api/truman/tick")
+def truman_tick():
+    env = get_environment()
+    return env.tick()
+
+
+@app.get("/api/truman/graph/neighborhood/{node_id}")
+def truman_neighborhood(node_id: str):
+    env = get_environment()
+    g = env.graph()
+    try:
+        center = g.get_node(node_id)
+        if not center:
+            raise HTTPException(404, f"{node_id} not found in the current Truman environment")
+        out_edges = g.edges_from(node_id)
+        in_edges = g.edges_to(node_id)
+        node_ids = {node_id}
+        edges = []
+        for e in out_edges:
+            node_ids.add(e.object_id)
+            edges.append({"from": e.subject_id, "to": e.object_id, "rel": e.relation})
+        for e in in_edges:
+            node_ids.add(e.subject_id)
+            edges.append({"from": e.subject_id, "to": e.object_id, "rel": e.relation})
+        nodes = []
+        for nid in node_ids:
+            n = g.get_node(nid)
+            if n:
+                nodes.append({"id": n.node_id, "type": n.node_type, "properties": n.properties})
+        return {"nodes": nodes, "edges": edges}
+    finally:
+        g.close()
+
+
+@app.get("/api/truman/recovery/{payment_id}")
+def truman_recovery(payment_id: str):
+    env = get_environment()
+    g = env.graph()
+    try:
+        if not g.get_node(payment_id):
+            raise HTTPException(404, f"{payment_id} not found in the current Truman environment")
+        verdict = run_recovery_for_payment(g, payment_id, investigate=False)
+        return json.loads(verdict.model_dump_json())
+    finally:
+        g.close()
+
+
+@app.get("/api/truman/risk/{device_id}")
+def truman_risk(device_id: str):
+    env = get_environment()
+    g = env.graph()
+    try:
+        if not g.get_node(device_id):
+            raise HTTPException(404, f"{device_id} not found in the current Truman environment")
+        verdict = run_risk_for_device(g, device_id, investigate=False)
+        return json.loads(verdict.model_dump_json())
     finally:
         g.close()
 

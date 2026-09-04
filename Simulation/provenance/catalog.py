@@ -12,7 +12,7 @@ new provenance claims, a consolidation and formalization of what is
 already true in the codebase.
 
 WHAT THIS IS: one `ProvenanceEntry` per constant --
-  - 28 entries with `status="implemented"`: every constant this catalog's
+  - 29 entries with `status="implemented"`: every constant this catalog's
     own author found by grepping "MODELING ASSUMPTION"/"RESEARCH-GROUNDED"/
     "PLACEHOLDER" (case-insensitive, close variants) across
     Simulation/world/*.py and Simulation/world/agents/*.py, cross-checked
@@ -219,7 +219,7 @@ def with_rejected_alternatives() -> list[ProvenanceEntry]:
 
 register(ProvenanceEntry(
     constant_name="INCOME_LOGNORMAL_MU",
-    location="world/engine.py:65",
+    location="world/engine.py:72",
     value="8.3",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -250,7 +250,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="INCOME_LOGNORMAL_SIGMA",
-    location="world/engine.py:66",
+    location="world/engine.py:73",
     value="0.5",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -281,7 +281,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="INCOME_MIN",
-    location="world/engine.py:67",
+    location="world/engine.py:74",
     value="300.0",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -299,7 +299,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="INCOME_MAX",
-    location="world/engine.py:68",
+    location="world/engine.py:75",
     value="25000.0",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -315,7 +315,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="OPENING_BALANCE_FRACTION_RANGE",
-    location="world/engine.py:74",
+    location="world/engine.py:81",
     value="(0.1, 1.0)",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -339,7 +339,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="RISK_PREFERENCE_RANGE",
-    location="world/engine.py:80",
+    location="world/engine.py:87",
     value="(0.0, 1.0)",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -353,7 +353,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="PAYDAY_RANGE",
-    location="world/engine.py:86",
+    location="world/engine.py:93",
     value="(1, 28)",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -372,7 +372,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="SAVINGS_SWEEP_FRACTION",
-    location="world/engine.py:112",
+    location="world/engine.py:119",
     value="0.15",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -394,7 +394,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="HOUSEHOLD_SWEEP_FRACTION",
-    location="world/engine.py:127",
+    location="world/engine.py:134",
     value="0.10",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -408,7 +408,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="HOUSEHOLD_SIZE_WEIGHTS",
-    location="world/engine.py:137",
+    location="world/engine.py:144",
     value="{1: 0.30, 2: 0.35, 3: 0.20, 4: 0.15}",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -425,7 +425,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="ORG_MEMBERSHIP_FRACTION",
-    location="world/engine.py:145",
+    location="world/engine.py:152",
     value="0.5",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -439,7 +439,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="ORG_TARGET_SIZE",
-    location="world/engine.py:150",
+    location="world/engine.py:157",
     value="25",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -452,7 +452,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="ORG_FUNDING_SAFETY_MULTIPLIER",
-    location="world/engine.py:164",
+    location="world/engine.py:171",
     value="1.2",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -468,7 +468,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="NUM_COMMUNITIES",
-    location="world/engine.py:172",
+    location="world/engine.py:179",
     value="5",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -484,7 +484,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="DEVICE_HOUSEHOLD_SHARING_FRACTION",
-    location="world/engine.py:203",
+    location="world/engine.py:210",
     value="0.3",
     provenance_type="modeling-assumption",
     status="implemented",
@@ -506,8 +506,50 @@ register(ProvenanceEntry(
 ))
 
 register(ProvenanceEntry(
+    constant_name="DEVICE_VALIDITY_PERIOD_DAYS_RANGE",
+    location="world/engine.py:260",
+    value="(1095, 1825)",
+    provenance_type="research-grounded",
+    status="implemented",
+    source=(
+        "world/engine.py's Phase 3 constants block (comment immediately above the constant): 'Two "
+        "independently WebFetched, directly-quoted sources (not a WebSearch-synthesized paraphrase -- same "
+        "verification discipline docs/Research.md's own citations use) agree real card/instrument validity "
+        "windows sit in the low-single-digit-years range: WalletHub, \"Card Expiration Dates: Everything You "
+        "Need to Know\" (wallethub.com/edu/cc/credit-cards-expiration-date/25566, accessed 2026): \"The "
+        "expiration date on a credit card is usually three to five years after the card is activated\" -- "
+        "corroborated (not identically, since real issuer practice genuinely varies) by Capital One's own "
+        "issuer-side statement, \"Credit Card Expiration Dates: What to Know\" "
+        "(capitalone.com/learn-grow/money-management/credit-card-expiration-and-replacement/, accessed 2026): "
+        "\"Credit cards generally expire after two to four years.\"' Memory.md's Phase 3 section repeats this "
+        "in full, including the exact WebFetch verification trail."
+    ),
+    citation_verbatim="years after the card is activated",
+    confidence_note=(
+        "Same qualitative-fact-vs-specific-value split SETTLEMENT_DELAY_T_PLUS_1's own confidence_note "
+        "already draws: the RANGE (3-5 years) is research-grounded, directly WebFetched and quoted (not a "
+        "WebSearch-synthesized paraphrase -- both sources' exact sentences were independently verified against "
+        "the live page, per docs/Memory.md's 'Phase 3' section). A SEPARATE, explicitly-named MODELING "
+        "ASSUMPTION (stated in the same code comment, NOT covered by this citation) governs HOW a device's "
+        "residual time-to-expiry is positioned relative to simulated day 0 -- drawn uniformly across the "
+        "validity window (the standard renewal-process statistical assumption), which is what determines "
+        "WHICH devices actually expire during a given run's day range. That positioning assumption has no "
+        "citation of its own and is not claimed to."
+    ),
+    rejected_alternatives=(
+        "The two sources' own stated windows do not agree exactly (WalletHub: 'three to five years'; Capital "
+        "One: 'two to four years') -- real issuer practice genuinely varies. This constant is anchored on "
+        "WalletHub's more commonly-cited 'usual' figure (also independently corroborated by this session's "
+        "initial WebSearch synthesis calling five years 'the standard for most major credit cards'), with "
+        "Capital One's lower bound treated as corroborating evidence that the low-single-digit-years range is "
+        "real, not as a second independent number averaged in -- a 2-5 year union range was considered and "
+        "not used, since it would blend two sources' distinct claims into a number neither source states."
+    ),
+))
+
+register(ProvenanceEntry(
     constant_name="SETTLEMENT_DELAY_T_PLUS_1",
-    location="world/engine.py:638 (SimulationEngine._run_settlement; the T+1 delay is implicit in the "
+    location="world/engine.py:746 (SimulationEngine._run_settlement; the T+1 delay is implicit in the "
     "method's full-daily-sweep ordering -- not a standalone named numeric constant)",
     value="1 simulated day (T+1) -- structural, from _run_one_day() calling _run_settlement() once per "
     "tick before that day's purchases can add anything new to a pending account",
@@ -545,7 +587,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="SETTLEMENT_BATCH_HOUR_UTC",
-    location="world/engine.py:698 (self.clock.timestamp(hour=3, minute=0, second=0), inside "
+    location="world/engine.py:806 (self.clock.timestamp(hour=3, minute=0, second=0), inside "
     "_run_settlement; not a standalone module-level constant)",
     value="hour=3, minute=0, second=0 (03:00 UTC)",
     provenance_type="modeling-assumption",
@@ -563,7 +605,7 @@ register(ProvenanceEntry(
 
 register(ProvenanceEntry(
     constant_name="EVENT_TIMESTAMP_INTRADAY_HOUR_RANGE",
-    location="world/engine.py:1049-1056 (SimulationEngine._event_timestamp; hour=self.rng.randint(7, 22)); "
+    location="world/engine.py:1220-1227 (SimulationEngine._event_timestamp; hour=self.rng.randint(7, 22)); "
     "design-level statement of the same rule in world/clock.py:36-44 (SimClock.timestamp docstring)",
     value="hour uniform in [7, 22], minute uniform in [0, 59]",
     provenance_type="modeling-assumption",

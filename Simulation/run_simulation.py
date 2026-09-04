@@ -248,19 +248,24 @@ def write_output(result: SimulationResult, outdir: str) -> None:
     # exactly one -- and a fingerprint-equivalent field). owner_person_ids
     # uses the same JSON-array-string convention as households.csv's
     # person_ids / communities.csv's id lists (Design.md: "JSON only where
-    # a record's shape is genuinely nested").
+    # a record's shape is genuinely nested"). issued_day/expiry_day (Phase
+    # 3, "Mechanism Engine" -- see docs/Memory.md's "Phase 3" section) are
+    # new, additive columns -- simulated-day indices, same convention as
+    # transactions.csv's own `day` column.
     device_rows = [
         {
             "device_id": d.device_id,
             "owner_person_ids": json.dumps(d.owner_person_ids),
             "fingerprint": d.fingerprint,
+            "issued_day": d.issued_day,
+            "expiry_day": d.expiry_day,
         }
         for d in result.devices
     ]
     _write_csv(
         os.path.join(outdir, "devices.csv"),
         device_rows,
-        ["device_id", "owner_person_ids", "fingerprint"],
+        ["device_id", "owner_person_ids", "fingerprint", "issued_day", "expiry_day"],
     )
 
     event_rows = [dataclasses.asdict(e) for e in result.events]

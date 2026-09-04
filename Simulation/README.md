@@ -72,13 +72,24 @@ Merchant settlement              T+1 sweep from pending to spendable balance
 Multi-account (checking/savings) a documented fraction of salary auto-swept
 Real device-sharing              household members may share one device;
                                    deliberately NO fraud mechanism (see below)
+Pluggable failure mechanisms     a real FailureMechanism framework
+ (world/mechanisms.py)             (world/mechanisms.py) — an ordered list of
+                                   independently-testable, causally-real
+                                   reasons a purchase attempt fails, not one
+                                   hardcoded balance check. Two mechanisms as
+                                   of this phase: InsufficientFunds (the
+                                   original, Phase 1-2.5 balance check,
+                                   migrated unchanged) and ExpiredInstrument
+                                   (NEW — a Device past its own research-
+                                   grounded validity window fails every
+                                   purchase, regardless of balance)
 validation/                      samples a run and checks it two ways: against
                                    its own stated rules, and against real cited
                                    research numbers — honestly reports GAPs,
                                    doesn't hide them
 ```
 
-53 tests, all passing (`python -m pytest tests/ -v`). Determinism is a hard
+70 tests, all passing (`python -m pytest tests/ -v`). Determinism is a hard
 rule, not a claim: same seed → byte-identical output, checked at both the
 in-memory and CSV level, on every phase, every time, including via
 independent re-runs outside the test suite (`diff -rq` on two full runs).

@@ -22,8 +22,8 @@ const Settings = {
   get anyKeySet(){ return PROVIDER_ORDER.some(p => this.keys(p).length > 0); },
 };
 
-async function api(path){
-  const res = await fetch(Settings.apiBase + path);
+async function api(path, opts){
+  const res = await fetch(Settings.apiBase + path, opts);
   if(!res.ok){
     const body = await res.text().catch(()=> '');
     throw new Error(`${res.status} ${res.statusText} -- ${body.slice(0,200)}`);

@@ -114,6 +114,22 @@ from world.models import Account, LedgerEntry
 ASSET_OWNER_TYPES = {"bank_reserve"}
 
 
+def has_sufficient_balance(balance: float, amount: float) -> bool:
+    """
+    True iff a liability account with this `balance` can cover `amount`
+    without going negative -- Rules.md #7's literal enforcement condition,
+    pulled out as a standalone, importable predicate (Phase 3, "Mechanism
+    Engine" -- see world/mechanisms.py's `InsufficientFundsMechanism` and
+    docs/Memory.md's "Phase 3" section) rather than left inline inside
+    `post_transfer` below. Both call sites now share this ONE function --
+    `post_transfer`'s own real enforcement check, and
+    `InsufficientFundsMechanism.check()`'s pre-flight check ahead of it --
+    so they cannot silently drift apart into two subtly different
+    conditions. Pure, no side effects.
+    """
+    return amount <= balance
+
+
 @dataclass
 class Bank:
     bank_id: str
@@ -284,7 +300,7 @@ def post_transfer(
     if amount <= 0:
         return True
     from_account = from_bank.accounts[from_account_id]
-    if amount > from_account.balance:
+    if not has_sufficient_balance(from_account.balance, amount):
         return False
     from_entry_id, to_entry_id = entry_ids
     from_bank._post(from_account_id, amount, "debit", timestamp, description, from_entry_id, transaction_id)
