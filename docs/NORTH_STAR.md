@@ -88,6 +88,44 @@ here, in miniature, in one domain at a time:
   calls). See `financial_system/verification/README.md` for the full
   real numbers and the honest list of what the other seven properties
   would still take to build.
+- **§34, "Create a Research Provenance System" (structured fields: source,
+  source type, author, publication, date, domain, claim, extracted
+  mechanism, formalization, assumptions, confidence, validation status)**
+  — `Simulation/provenance/` is a bounded, honest first instance of this:
+  a structured, queryable catalog (`catalog.py`'s `ProvenanceEntry`
+  dataclass registry, `report.py`'s query interface) indexing every
+  behavioral constant already labeled inline per Rules.md #2, plus every
+  provenance-labeled rule from `Research.md` Part C's not-yet-built
+  fraud/credit/loan proposals — 43 entries total, cross-checked by
+  `tests/test_provenance.py` against the real current code and the real
+  current `Research.md` text, not eyeballed. It deliberately keeps
+  Rules.md #2's real three-way vocabulary (research-grounded/modeling-
+  assumption/placeholder) rather than adopting this section's fuller
+  seven-way one — see `Simulation/provenance/README.md` for why. A
+  snapshot, not a living enforcement mechanism: it does not yet watch
+  `world/` for newly-added, not-yet-cataloged provenance comments on its
+  own.
+- **§23, temporal and conditional actions ("Insufficient funds -> WAIT 24
+  HOURS -> RE-EVALUATE WORLD -> IF liquidity recovered -> retry")** —
+  this named example is no longer only a diagram. `financial_system/
+  bridges/live_recovery_loop.py` drives a real, running (small-population)
+  `Simulation/` world day-by-day, calls Heimdall's real, unmodified
+  `recovery_agent.run_recovery_for_payment()` on every real
+  `payment_failure` as it happens, and — for a real RETRY decision — the
+  new, additive `SimulationEngine.attempt_retry()` method
+  (`Simulation/world/engine.py`) actually re-attempts the SAME purchase
+  one simulated day later, against the person's REAL, then-current
+  balance: a genuine, causally-determined outcome, never a scripted one
+  (§33's own rule). Real numbers from one seed=42/population=20/days=90
+  run: 23 real `payment_failure`s, 23 real `RETRY` decisions (all
+  `insufficient_funds`, Truman's only real failure category), 22 retries
+  actually attempted a day later, 0 succeeded (a real, causally-explained
+  result — Truman's only income source is each person's fixed monthly
+  payday, so a 1-day retry window rarely lands on one; see `Simulation/
+  docs/Memory.md`'s "Live Recovery loop" entry for the full trace and
+  statistical sanity-check). Scope: Recovery only — Risk and Controller
+  closing their own write-back loops the same way is real, unattempted
+  future work, same honesty convention as every other entry on this list.
 
 The pattern across all of these: every one was built small, in one
 place, verified before moving on — never the other way around. That's

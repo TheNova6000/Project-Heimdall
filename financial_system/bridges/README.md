@@ -13,12 +13,156 @@ existing (non-`bridges/`) code was ever edited to build any of this --
 `git diff --stat financial_system/` only ever touches files under
 `financial_system/bridges/` itself.
 
-**No writeback.** This bridge only reads a finished `Simulation/` run and
-produces Heimdall decisions; it does not write an Action back into a
-running `Simulation/` world (Working Section 23's item (2)/(3) --
-`Simulation/` only ever produces a finished CSV export, has no paused/live
-world to act into, and has no retry mechanism yet). That remains exactly as
-unbuilt as the spec says.
+**No writeback (of the batch bridge above -- see the exception below).**
+This one-way bridge only reads a finished `Simulation/` run and produces
+Heimdall decisions; it does not write an Action back into a running
+`Simulation/` world (Working Section 23's item (2)/(3)). That remains
+exactly as true as ever for `simulation_bridge.py`/`run_bridge.py`
+themselves -- neither file is touched by the exception below.
+
+**The exception: `live_recovery_loop.py` (later, separate task, see its
+own section below).** For ONE domain -- Recovery -- a SEPARATE module now
+does exactly what this paragraph used to say doesn't exist: it drives a
+live, still-running `Simulation/` world day-by-day, calls Heimdall's real
+`recovery_agent.run_recovery_for_payment()` on each new failure as it
+happens, and writes a real retry Action back into that same running world
+via a new, additive `SimulationEngine.attempt_retry()` method. See "Live
+Recovery loop" below for the full design. Risk and Controller closing
+their own loops the same way remains real, unattempted future work.
+
+## Live Recovery loop (2026-09-04, later follow-on task -- closes the write-back gap for Recovery)
+
+`financial_system/bridges/live_recovery_loop.py` is a SEPARATE, ADDITIVE
+module (not a modification of `simulation_bridge.py`/`run_bridge.py`,
+which remain exactly as described above) implementing
+`docs/NORTH_STAR.md` Working Section 23's own named example concretely:
+"Insufficient funds -> WAIT 24 HOURS -> RE-EVALUATE WORLD -> IF liquidity
+recovered -> retry" -- driven by Heimdall's real, unmodified
+`recovery_agent.run_recovery_for_payment()` decision, not a hardcoded
+rule. Full design rationale, the design pivot mid-task (sampling ->
+shrink-the-canvas), the exact determinism argument, and the full real-run
+numbers are written up in `Simulation/docs/Memory.md`'s "Live Recovery
+loop" entry -- this section is the short version.
+
+**How it works.** `run_live_recovery_loop()` builds a fresh
+`SimulationEngine` (from a genuinely SMALL population -- this task's real
+run used population=20, not the ~300-person scale the batch bridge uses)
+and steps it one simulated day at a time via the engine's new
+`run_one_tick()` method. After EVERY day, it takes a real mid-run snapshot
+(`engine.snapshot()`), writes it out via `Simulation/run_simulation.py`'s
+own `write_output()` (reused as a library, unmodified), and re-runs it
+through `simulation_bridge.transform_simulation_output()` +
+`financial_state.builder.build_financial_state()` +
+`entity_resolution.given_matches` + `financial_graph.builder.build_graph()`
+-- the exact same real, unmodified Heimdall functions `run_bridge.py`
+already calls, reused as a library here too. EVERY new `payment_failure`
+that occurred (never a sample or a filtered subset -- see "Design pivot"
+below) gets a real decision from `recovery_agent.run_recovery_for_payment(
+graph, payment_id, investigate=False)`. For every real `RETRY` decision, a
+retry is scheduled for the next simulated day and later actually attempted
+via the new `SimulationEngine.attempt_retry()` method, against the
+person's REAL balance at that later point -- a genuine, causally-determined
+outcome (it can, and in this task's real run always did, fail again).
+
+**Design pivot, honestly recorded.** The first working version of this
+loop ran at the batch bridge's usual ~300-person scale and sampled a small
+fixed number of new failures per checkpoint to keep cost bounded. The
+project owner correctly flagged this as still cherry-picking out of a
+large population, and redirected mid-task to the final design: shrink the
+world instead of filtering the stream. At a small population, the bank
+agent isn't selecting a subset out of a firehose -- it's watching its own
+small world's entire real transaction stream, and every `payment_failure`
+in that stream gets a real decision. This also solved the original
+performance concern for free: at population=20/50, a full daily rebuild is
+cheap (measured: 37.96s / 73.22s respectively for a full 90-day run of 90
+daily checkpoints), so no coarser checkpoint batching was even needed --
+checkpointing happens every single simulated day, the exact, literal match
+for Working Section 23's "WAIT 24 HOURS" example.
+
+**Does Recovery ever call an LLM?** No, by construction: this loop's only
+call site passes `investigate=False` unconditionally, and
+`recovery_agent.run_recovery_for_payment()`'s own code only ever calls
+Discovery.AI when BOTH `investigate=True` AND the failure_reason is
+unrecognized -- confirmed by reading the function directly, not assumed.
+`test_live_recovery_loop.py::test_no_llm_calls_ever` proves this from real
+output (every decision's `investigation_confidence` is `None`).
+
+**Determinism.** Same seed + same config -> byte-identical output,
+including every retry transaction and every Heimdall decision. The exact
+fixed ordering (retries execute before that day's own core RNG draws,
+sorted by `original_transaction_id`; payments are evaluated sorted by
+`payment_id`, never `store.all_rows()`'s own order) is documented in
+`attempt_retry()`'s own docstring (`Simulation/world/engine.py`) and
+`Simulation/docs/Memory.md`. Proven by
+`test_live_recovery_loop.py::test_determinism_two_runs_byte_identical_
+world_output`, which diffs the actual `transactions.csv`/`events.csv`
+bytes across two independent runs of the same seed.
+
+### Real end-to-end run (verbatim, seed=42, population=20, banks=2, merchants=4, days=90)
+
+```
+wall-clock time: 37.96s (90 daily checkpoints)
+total transactions (final): 1055
+failed payments (total, cumulative): 23
+Recovery decisions made: 23  {'RETRY': 23}
+retries scheduled (executable): 23
+retries not executable (RETRY_ALT_METHOD, no Simulation/ mechanic): 0
+retries actually attempted: 22
+  succeeded: 0
+  failed again: 22
+retries scheduled but never reached (target day >= run end): 1
+```
+
+Every failure is Truman's only real failure category
+(`insufficient_funds`), so every decision is `RETRY` at
+`decision_score=0.45` (`FAILURE_TAXONOMY`'s own real, unmodified base
+rate). 0/22 real retries succeeded in this run -- checked directly, not
+assumed to be a bug: Truman's ONLY income mechanism is a person's fixed
+monthly `payday` (`world/agents/person.py`'s `maybe_receive_income()`), so
+a 1-day retry window has roughly a 1/28 a priori chance per attempt of
+landing on a payday; across 22 real attempts, an all-failed outcome is
+statistically unsurprising (`P(>=1 success) ~= 55%` if independent, so
+`P(0 successes) ~= 45%`), not evidence of a broken mechanic. A separate
+population=50 robustness run also produced 0/29 successes, for the same
+reason. `test_no_magical_outcome` proves the mechanic is genuinely capable
+of both outcomes -- an automatic-success bug would fail that test
+regardless of any specific run's count. See `Simulation/docs/Memory.md`
+for the full per-transaction trace that confirms this causal explanation.
+
+### Honest scope
+
+Recovery only -- Risk and Controller reacting live to their own
+transaction types is real future work, not attempted here. `RETRY_ALT_
+METHOD` decisions are logged but never executed as a same-account retry
+(Truman has no alternate-payment-method concept); never actually produced
+by Truman-derived data today. `RETRY_PAYMENT` and `RETRY_LATER` collapse
+to the same `failure_day + 1` schedule, since Truman's clock has no finer
+time unit than one day and Heimdall's own code encodes no other numeric
+"later" period. A retry scheduled at/after the run's own last day is
+never attempted (1 of 23 in the real run above) -- the same honest,
+expected end-of-run boundary caveat `_run_settlement`'s own last-day
+proceeds gap already names.
+
+### New files (this task)
+
+- `Simulation/world/engine.py` -- three new, additive methods on
+  `SimulationEngine` (`run_one_tick()`, `snapshot()`, `attempt_retry()`),
+  two new `Transaction.kind` values (`retry_success`/`retry_failure`), and
+  a new optional `retried_from` parameter on the private `_record()`
+  helper (threaded into the `Event.payload` JSON, not a new `Transaction`
+  field -- see `Simulation/docs/Memory.md` for exactly why). None of the
+  three new methods is called anywhere in `run()`/`_run_one_day()`
+  (confirmed by grep) -- a normal `run_simulation.py` invocation's output
+  is byte-identical to before this task, seed for seed (verified: `diff
+  -rq` against a pre-task baseline run, every file identical).
+- `financial_system/bridges/live_recovery_loop.py` -- the live orchestrator.
+- `financial_system/bridges/test_live_recovery_loop.py` -- 7 tests, all
+  passing (real-not-mocked, no-LLM, no-magical-outcome, same-purchase
+  retry, two determinism tests, kind-value/payload traceability).
+- `financial_system/bridges/live_bridge_output/` -- one real generated run's
+  output (regenerable: `python -m financial_system.bridges.
+  live_recovery_loop --seed 42 --population 20 --banks 2 --merchants 4
+  --days 90`), not required to exist for the code itself to work.
 
 ## Domain bridge registry (2026-09-04, later follow-on task)
 

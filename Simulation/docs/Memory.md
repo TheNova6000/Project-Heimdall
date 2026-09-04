@@ -1493,3 +1493,281 @@ reusing that section's reasoning verbatim rather than re-deriving it. See
 `financial_system/bridges/README.md`'s new top section for the full
 registry write-up and verbatim capability-report output.
 
+# Live Recovery loop — closing Recovery's write-back loop (2026-09-04)
+
+## Status: built, run, and tested. Working.
+
+Every prior Heimdall bridge session (Parts A–D above) was explicitly
+one-way and read-only: run Truman to completion, export a finished CSV,
+feed it through Heimdall's real code ONE TIME, after the fact — no Action
+was ever written back into a *running* Truman world (`financial_system/
+bridges/README.md`'s own header states this plainly: "this bridge only
+reads a finished Simulation/ run... it does not write an Action back into
+a running Simulation/ world"). This session closes that loop for ONE
+domain — Recovery — implementing `docs/NORTH_STAR.md` Working Section 23's
+named example concretely: "Insufficient funds → WAIT 24 HOURS →
+RE-EVALUATE WORLD → IF liquidity recovered → retry," driven by Heimdall's
+real `recovery_agent.run_recovery_for_payment()` decision, not a
+hardcoded rule.
+
+## What changed in code (Simulation/ side) — three new, additive methods
+
+`world/engine.py`'s `SimulationEngine` gains three new public methods.
+None is called anywhere in `run()`/`_run_one_day()` (confirmed by grep) —
+each is dead code from the default engine loop's own perspective, exactly
+this task's own non-negotiable constraint:
+
+- **`run_one_tick()`** — a public wrapper around exactly one iteration of
+  `run()`'s own loop body (`_run_one_day()` then `self.clock.advance()`).
+  Exists so an external driver can step the engine day-by-day without
+  calling underscore-prefixed "private" methods directly.
+- **`snapshot()`** — builds a `SimulationResult` from the engine's CURRENT
+  state at any point mid-run, field-for-field identical to what `run()`
+  builds at its own end. Used by the live orchestrator to write a real CSV
+  checkpoint of the world exactly as it stands right now.
+- **`attempt_retry(original_transaction_id, person_id, merchant_id,
+  amount, day=None)`** — attempts a REAL retry of a specific already-
+  failed purchase: same person, same merchant, same amount as the
+  original (a retry retries the SAME purchase, it does not invent a new
+  one). Uses the exact same `post_transfer()` + `_record()` machinery
+  `_maybe_attempt_purchase` already uses, so success/failure is decided by
+  the person's REAL, CURRENT balance at the moment this is called — never
+  a scripted outcome (`NORTH_STAR.md`'s own "no magical outcomes" rule).
+  Records the outcome as a NEW `Transaction` (never a mutation of the
+  original), `kind="retry_success"`/`"retry_failure"` — two new values
+  added to the `kind` vocabulary (`docs/Design.md`'s "Naming conventions"
+  section, updated).
+
+### Why `retried_from` is an `Event.payload` key, not a new `Transaction` field
+
+The task's own precedent (device_id, added as a real `Transaction`
+dataclass field in an earlier session) was the obvious first instinct for
+"how do I record which original transaction this retries" — but it does
+NOT work here without breaking a *harder* constraint this task carries
+that the device_id task didn't: **a normal `run_simulation.py` invocation
+must stay byte-identical to before this task, seed for seed.**
+`run_simulation.py`'s `write_output()` calls `dataclasses.asdict(t)` on
+every `Transaction` and writes it via `csv.DictWriter` against a FIXED
+`fieldnames` list; `DictWriter`'s default `extrasaction="raise"` means ANY
+new always-present dataclass field — even with a `""` default — either (a)
+crashes every normal run the moment it's not in that fixed fieldnames
+list, or (b) if added to that list, adds a new (always-empty, for a
+default run) column to literally every row of `transactions.csv`, which
+is not byte-identical to the pre-task baseline. Neither option is
+acceptable under this task's own constraint #1.
+
+The fix: `retried_from` is carried in the corresponding `Event`'s
+`payload` JSON dict instead — added to that dict ONLY when a caller passes
+`retried_from` (only `attempt_retry()` does), so every existing call
+site's payload stays byte-for-byte identical to before. This is the exact
+mechanism `docs/Design.md`'s "Output format" section already names for
+this situation ("JSON only where a record's shape is genuinely nested...
+a flat CSV would lose information") — not a new convention, just the
+existing one applied to a new case. Verified directly: a full
+seed=42/population=300/banks=4/merchants=20/days=90 `run_simulation.py`
+run, diffed file-for-file against a pre-task baseline run of the same
+config — `diff -rq` reports every file identical.
+
+## The live orchestrator: `financial_system/bridges/live_recovery_loop.py`
+
+Lives outside `Simulation/` (in `financial_system/bridges/`) because it
+inherently straddles both systems — same placement logic as every prior
+bridge module. It is NOT part of `Simulation/`'s own test suite or import
+graph; `Simulation/`'s `world/engine.py` has no import of, or dependency
+on, anything under `financial_system/`.
+
+### Design pivot during this task (kept here, honestly, not silently
+### smoothed over — same convention as every other struck-through decision
+### in this file)
+
+The first working design ran the loop against Truman's usual ~300-person
+scale and, to keep the per-checkpoint Heimdall/rebuild cost bounded,
+SAMPLED a small fixed number of newly-failed payments per checkpoint
+(first N by transaction_id). Mid-task, the project owner correctly
+identified this as still a form of filtering/cherry-picking out of a
+large population, not what was wanted, and redirected to a different,
+better design: **shrink the canvas, don't filter the stream.** The final
+design runs the loop against a genuinely SMALL Truman population (this
+task's real run: population=20) and processes EVERY `payment_failure`
+that occurs in that small world — nothing sampled, nothing filtered. The
+"smallness" comes from the world itself being small (the bank agent
+watches its own small world's entire real transaction stream), not from
+curating what it gets to see. This also incidentally solved the original
+brief's own stated performance worry: at this scale, a full Phase 1→2→3
+rebuild is cheap enough to do EVERY single simulated day (see "Checkpoint
+frequency" below) — no coarser batching was even needed.
+
+### Checkpoint frequency: every simulated day (measured, not assumed)
+
+A full 90-day/13,556-transaction bridge rebuild (`build_financial_state` +
+`given_matches` + `build_graph`, no Controller-specific steps needed —
+Recovery-only scope) was measured directly at **6.76 seconds** (transform
+0.31s, Phase 1 1.30s, Phase 2 given-matches 2.66s, Phase 3 build_graph
+2.49s). At the SMALL canvas this task actually uses (population=20), the
+real, measured end-to-end 90-day live loop — 90 daily checkpoints, i.e.
+rebuilding the store+graph from scratch after EVERY simulated day — took
+**37.96 seconds wall-clock total** (population=50 also measured, for a
+robustness check: 73.22s for 90 daily checkpoints). Both are well within
+"practical," so daily checkpointing (the finest granularity Truman's own
+day-tick clock has, and the literal, exact match for `NORTH_STAR.md`
+Working Section 23's "WAIT 24 HOURS" example) was kept — no coarser
+batching was needed or used.
+
+### Determinism — the exact fixed ordering used
+
+1. `attempt_retry()` calls for a simulated day happen at the very START of
+   that day's loop iteration, BEFORE that day's own `run_one_tick()` (i.e.
+   before any of that day's own settlement/person-loop RNG draws) — a
+   fixed position in the sequence, every run.
+2. Retries scheduled for the same day are executed sorted by
+   `original_transaction_id` (a zero-padded monotonic hex counter, so
+   string sort == creation order) — never dict/set iteration order.
+3. Every payment considered at a checkpoint is processed in the same fixed
+   order: `sorted(payment_id for ... if status=="failed")`, never
+   `store.all_rows()`'s own row order.
+4. Heimdall's own decision logic draws NO randomness at all — confirmed by
+   reading `recovery/signals.py`/`recovery_agent.py` directly: it is a
+   pure function of graph state (payment status/failure_reason + sibling-
+   order lookups). The only randomness anywhere in this loop is Truman's
+   own single seeded `engine.rng`, consumed only by `attempt_retry()`'s
+   `_event_timestamp()` call, at the fixed position in (1).
+
+Proven, not just argued: `financial_system/bridges/
+test_live_recovery_loop.py`'s `test_determinism_two_runs_identical_reports`
+and (the strongest form) `test_determinism_two_runs_byte_identical_world_
+output` run the loop twice from scratch and diff the actual
+`transactions.csv`/`events.csv`/`persons.csv` bytes — identical, including
+every retry transaction and its payload.
+
+## Does Recovery ever call an LLM? Read directly, confirmed no (given how
+## this loop calls it)
+
+`recovery_agent.run_recovery_for_payment(graph, payment_id, investigate)`
+only ever calls `discovery_adapter.investigate.investigate_evidence()`
+(Discovery.AI/LLM) when BOTH `investigate=True` AND
+`not signals.known_category` (an unrecognized `failure_reason`). This
+loop's only call site passes `investigate=False` unconditionally — the
+same default every prior batch bridge session already used — so this
+branch is categorically unreachable here, regardless of what failure
+categories ever appear. (Separately: Truman only ever produces
+`insufficient_funds`, which IS a known category, so even
+`investigate=True` would never trigger it on this data — but the loop
+does not rely on that; `investigate=False` makes it structurally
+impossible regardless.) Verified directly, not just argued:
+`test_live_recovery_loop.py`'s `test_no_llm_calls_ever` asserts every real
+decision's `investigation_confidence` (only ever non-None when
+`investigate_evidence()` actually ran) is `None`.
+
+## Real end-to-end run (seed=42, population=20, banks=2, merchants=4, days=90)
+
+```
+wall-clock time: 37.96s (90 daily checkpoints)
+total transactions (final): 1055
+failed payments (total, cumulative): 23
+Recovery decisions made: 23  {'RETRY': 23}
+retries scheduled (executable): 23
+retries not executable (RETRY_ALT_METHOD, no Simulation/ mechanic): 0
+retries actually attempted: 22
+  succeeded: 0
+  failed again: 22
+retries scheduled but never reached (target day >= run end): 1
+```
+
+Every one of the 23 failures is `insufficient_funds` (Truman's only
+causal failure mechanism), so every decision is `RETRY` at
+`decision_score=0.45`/`proposed_action=RETRY_LATER` — exactly
+`FAILURE_TAXONOMY`'s own real, unmodified number, the same one every
+prior batch bridge session already reported. 22 of the 23 scheduled
+retries fell inside the run window and were genuinely attempted the next
+simulated day, against the person's real balance at that later point; ALL
+22 failed again. This was checked directly, not assumed to be a bug: at
+population=20, two people (`person_00009`, `person_00014`) account for
+every failure in this run, and both have a large gap between their fixed
+monthly `payday` and the day their balance ran short — e.g.
+`person_00009` failed on day 5 (balance 28.48, needed 106.98), was
+retried on day 6 (still balance 28.48 — no income arrived in that single
+day), and did not get paid again until day ~23. `Person.
+maybe_receive_income()` only ever pays on a person's own fixed
+day-of-month `payday` (`world/agents/person.py`) — there is no other
+liquidity mechanism in Truman at all. A 1-simulated-day retry window
+therefore has roughly a `1/28` a priori chance per attempt of landing on
+someone's payday; with 22 real attempts, `P(at least one success) ≈
+1-(1-1/28)^22 ≈ 55%` if independent — so an all-failed outcome across 22
+real attempts is unsurprising, not a mechanism bug. This is the SAME
+honesty standard the Risk bridge section already applied to its own
+"zero HOLD verdicts" result and the Controller section applied to its own
+"1770/1770 PASS" result: a real, causally-explained result from honest
+input, not a gap to paper over. (Confirmed not population-specific: a
+population=50 robustness run also produced 0/29 successes, for the same
+reason.)
+
+## Testing — what's actually verified, not just claimed
+
+`financial_system/bridges/test_live_recovery_loop.py`, 7 tests, all
+passing, seed=42/population=20/days=10 (a fast, deterministic
+configuration verified separately during development, distinct from the
+90-day demonstration run above):
+
+- `test_recovery_is_real_not_mocked` — every decision carries Heimdall's
+  own real, unmodified `insufficient_funds` numbers
+  (`decision_score=0.45`, `proposed_action=RETRY_LATER`).
+- `test_no_llm_calls_ever` — every decision's `investigation_confidence`
+  is `None`.
+- `test_no_magical_outcome` — at least one real retry against a genuinely
+  insufficient balance fails, exactly like a real second attempt would.
+- `test_retry_amount_and_merchant_match_original` — a retry retries the
+  SAME purchase (amount/merchant/person), never a new one, and always
+  targets `failure_day + 1`.
+- `test_determinism_two_runs_identical_reports` /
+  `test_determinism_two_runs_byte_identical_world_output` — two
+  independent runs of the same seed/config produce identical reports AND
+  byte-identical `transactions.csv`/`events.csv`/`persons.csv`.
+- `test_retry_transactions_are_new_kind_values_traceable_via_payload` —
+  retry transactions are new rows (`kind=retry_success`/`retry_failure`),
+  the original `payment_failure` row is untouched, and every retry
+  Event's `payload.retried_from` correctly links back to its original
+  transaction.
+
+Also re-verified after this task's changes, unaffected: `Simulation/`'s
+own full test suite (56 tests — 53 pre-existing plus 3 from an unrelated,
+separately-in-progress `provenance/` task this session found already
+untracked in the working tree at session start, not authored by this
+task); a normal `run_simulation.py --seed 42 --population 300 --banks 4
+--merchants 20 --days 90` invocation, diffed file-for-file against a
+pre-task baseline of the same config (`diff -rq`, every file identical);
+and, on the real Heimdall dataset (never touched by this task), Risk
+(precision=100.0% recall=96.3% FPR=0.0%, tp=26 fp=0 tn=373 fn=1) and
+Recovery (category accuracy=100.0%, recovery rate 87/87 (100.0%),
+false-retry rate 57/144 (39.6%)) — both byte-for-byte identical to every
+prior session's documented baseline.
+
+## What's genuinely done vs. still rough (honest caveats)
+
+1. **Recovery only.** Risk and Controller reacting live to their own
+   transaction types is real future work, not attempted here — same
+   domain boundary this task's own brief set.
+2. **RETRY_ALT_METHOD is logged, never executed as a same-account retry.**
+   Truman has no alternate-payment-method concept; forcing this action
+   through the same `post_transfer` mechanic would misrepresent what
+   Heimdall's decision meant. Never actually produced by Truman-derived
+   data today (only `insufficient_funds` → `RETRY_LATER` ever appears),
+   kept for correctness if that ever changes.
+3. **RETRY_PAYMENT and RETRY_LATER collapse to the same schedule
+   (`failure_day + 1`).** Truman's day-tick clock has no finer time unit,
+   and no other numeric "later" period is encoded anywhere in Heimdall's
+   own code (`grep`-confirmed) — inventing e.g. a 7-day wait for
+   `RETRY_LATER` would be fabricating a policy Heimdall itself doesn't
+   specify. Only `RETRY_LATER` is ever actually exercised by
+   Truman-derived data.
+4. **A retry scheduled for a day at/after the run's own end is never
+   attempted** (1 of 23 in the real run above) — the same honest,
+   expected end-of-run boundary caveat `_run_settlement`'s own
+   last-day-proceeds gap already names, not a new kind of bug.
+5. **0/22 real retries succeeded in the demonstration run** — explained
+   above as a real, statistically-unsurprising consequence of Truman's
+   monthly-payday-only income model versus a 1-day retry window, not
+   engineered or cherry-picked; a `test_no_magical_outcome` test still
+   proves the mechanic is genuinely capable of both outcomes (an
+   automatic-success bug would fail that test, not this run's specific
+   count).
+

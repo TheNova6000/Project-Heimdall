@@ -24,6 +24,21 @@ would lose information.
   type (`persons.csv`, `transactions.csv`, `events.csv`), not one
   giant combined file.
 - Timestamps: ISO 8601, UTC, matching the rest of this repo.
+- `Transaction.kind` vocabulary (as of the live-recovery-loop task,
+  `docs/Memory.md`'s entry for it): `salary | purchase | payment_failure |
+  settlement | savings_sweep | household_sweep | org_funding |
+  retry_success | retry_failure`. The last two are new — emitted only by
+  `world/engine.py`'s `SimulationEngine.attempt_retry()`, an additive,
+  opt-in method never called from `run()`/`_run_one_day()` (so they never
+  appear in a normal `run_simulation.py` invocation's output). A retry
+  transaction's link back to the original failed transaction it retries is
+  carried in the corresponding `Event.payload` JSON's `retried_from` key,
+  not as a new `Transaction` field — see `attempt_retry()`'s own docstring
+  for why (a new always-present dataclass field would add a column to
+  every `transactions.csv` row on every run, breaking that task's own
+  byte-identical-default-output requirement; `payload` is already this
+  project's stated convention for "JSON only where a record's shape is
+  genuinely nested," per this section's original text above).
 
 ## Statistics/report output
 
