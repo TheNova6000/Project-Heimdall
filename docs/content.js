@@ -286,6 +286,94 @@ function heimdallHTML(){ return `
     <tr><td>47/50 honest-exception rate (94.0%)</td><td>Genuinely unexplainable cases left unresolved, not guessed at</td><td>reconciliation/runner.py</td></tr>
     <tr><td>77/610 settlements</td><td>A real accounting gap (gross &minus; fee &minus; tax &ne; net) found by this project</td><td>accounting_consistency_test.py</td></tr>
   </tbody></table></div>
+  <p class="sec-sub" style="margin-top:16px;">This is what each domain decides in isolation. What actually authorizes, executes, coordinates across domains, and checks the result afterward is a separate, real layer &mdash; see <a href="#" onclick="go('system'); return false;">System</a>.</p>
+</section>`; }
+
+function systemHTML(){ return `
+<section class="hero" style="padding-top:48px;">
+  <div class="section-label">THE SYSTEM AROUND THE DOMAINS<span class="line"></span></div>
+  <h2 class="sec-title">A verdict isn't a decision until something authorizes it</h2>
+  <p class="sec-sub" style="max-width:76ch;">Risk, Recovery, and Controller each produce a verdict. Getting from "verdict" to "money actually moved, exactly once, and someone can prove it later" takes four more real, tested systems: <b style="color:#fff;">Policy</b> (authorizes), <b style="color:#fff;">Action</b> (executes exactly once), the <b style="color:#fff;">Orchestrator</b> (coordinates when domains overlap), and <b style="color:#fff;">Verification</b> (checks afterward, independently). None of these are described anywhere else on this site &mdash; they're real, tested, and currently invisible, which is its own kind of dishonesty. This page fixes that.</p>
+</section>
+<section>
+  <div class="section-label">POLICY<span class="line"></span></div>
+  <h2 class="sec-title">11 rules, first match wins, no field for confidence</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/policy/engine.py</code> takes a domain verdict and an optional Expected Value figure, and returns a <code>PolicyDecision</code>: <code>outcome</code> (ALLOW / BLOCK / ESCALATE / REVIEW), which <code>rule_id</code> fired, and the <code>authorized_action</code>. Versioned by hand as <code>POLICY_RULES_VERSION="policy-v2"</code> &mdash; bumped whenever the rule list changes, not auto-derived.</p>
+  <div style="overflow-x:auto;"><table class="doctable"><thead><tr><th>rule_id</th><th>fires when</th></tr></thead><tbody>
+    <tr><td>R0_RECOVERY_EV_NEGATIVE_BLOCK</td><td>Expected Value is negative &mdash; blocks even a category-recoverable retry</td></tr>
+    <tr><td>R1_CONFLICT_ESCALATE</td><td>Two domains disagree on the same subject (see Orchestrator)</td></tr>
+    <tr><td>R2_RISK_HOLD_BLOCK</td><td>Risk says HOLD</td></tr>
+    <tr><td>R3_RECOVERY_RETRY_ALLOW</td><td>decision_score &ge; 0.5</td></tr>
+    <tr><td>R4_RECOVERY_RETRY_LOW_SCORE_REVIEW</td><td>Recovery says RETRY but score &lt; 0.5</td></tr>
+    <tr><td>R5_CONTROLLER_CLEAN_ALLOW</td><td>Controller says PASS</td></tr>
+    <tr><td>R6_CONTROLLER_UNRESOLVED_ESCALATE</td><td>Controller says INVESTIGATE and it's still unresolved</td></tr>
+    <tr><td>R7_RISK_RELEASE_ALLOW / R8_RISK_REVIEW</td><td>Risk says RELEASE / REVIEW</td></tr>
+    <tr><td>R9_RECOVERY_ESCALATE / R10_RECOVERY_DO_NOT_RETRY_ALLOW</td><td>Recovery's remaining two branches</td></tr>
+    <tr><td>R99_DEFAULT_REVIEW</td><td>catch-all &mdash; nothing falls through ungoverned</td></tr>
+  </tbody></table></div>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:10px;"><code>PolicyDecision</code> has no <code>investigation_confidence</code> field, and the module's own docstring says why: "copying it onto the decision would invite a future caller to read it as if it mattered to authorization." Discovery.AI's confidence literally cannot reach this struct.</p>
+</section>
+<section>
+  <div class="section-label">ECONOMIC REASONING<span class="line"></span></div>
+  <h2 class="sec-title">One real gate, narrower than it sounds</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/recovery/expected_value.py</code> (<code>EV_LOGIC_VERSION="recovery-ev-v1"</code>) computes <code>expected_value = base_success_rate &times; value &minus; fee_cost &minus; harm_cost</code> for every category-eligible retry, and Policy's <code>R0</code> rule blocks any retry whose EV is negative &mdash; even one Recovery alone would have approved.</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="kv" style="grid-template-columns:1fr; gap:12px;">
+      <div><div class="k">fee_cost</div><div class="v" style="font-weight:400; font-size:12px; color:var(--muted);">A flat 2% &mdash; not assumed, measured exactly across all 840 real fee rows (mean = median = min = max = 0.0200).</div></div>
+      <div><div class="k">harm_cost</div><div class="v" style="font-weight:400; font-size:12px; color:var(--muted);"><code>RISK_HARM_RATE_BY_TIER &times; value</code>, Laplace-smoothed off a genuinely tiny real sample: 4 LOW-tier devices (0 fraud), 6 HIGH-tier devices (6 fraud), <b style="color:var(--warn);">zero MEDIUM-tier devices exist</b> &mdash; its rate is linearly interpolated, stated as an assumption, never claimed measured.</div></div>
+      <div><div class="k">RETRY_ALLOW_THRESHOLD = 0.5</div><div class="v" style="font-weight:400; font-size:12px; color:var(--muted);">Not arbitrary &mdash; it's exactly where Phase 7's real categories split (0.85/0.80 clear it, 0.45/0.55/0.20 don't).</div></div>
+    </div>
+  </div>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:10px;">Real, run result: EV disagrees with category-level Recovery on <b style="color:#fff;">10 of 160</b> category-RETRY-eligible payments. 4 of those 10 are cases where the blind retry would have <em>actually succeeded</em> &mdash; correctly blocked anyway, because expected value asks whether the aggregate risk was worth taking, not whether this one instance happened to work.</p>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:8px;"><b style="color:var(--warn);">Stated honestly:</b> this is one narrow EV gate on one action type, not a general economic engine. <code>docs/NORTH_STAR.md</code>'s fuller <code>ExpectedUtility = benefit &minus; cost &minus; loss &minus; risk &minus; opportunity_cost</code> is explicitly future ("the existing EV/R0 architecture should evolve into a universal economic reasoning system") &mdash; nothing on this site should imply that engine exists today.</p>
+</section>
+<section>
+  <div class="section-label">ACTION LIFECYCLE<span class="line"></span></div>
+  <h2 class="sec-title">Exactly once, even across a crash</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/action/</code> turns an authorized decision into a real, idempotent command. An <code>Action</code> is the durable command object; its <code>execution_status</code> is, by design, the one field in the whole system explicitly allowed to mutate in place &mdash; it tracks the command's own lifecycle, never the financial world.</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:10px;">// event_execution.py::execute_action_with_events()</div>
+    <div class="loop-stage"><span class="dot" style="background:var(--good);"></span><span class="label">Same idempotency key, same parameters</span><span class="tag">cached result returned, zero re-execution</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--critical);"></span><span class="label">Same key, different parameters</span><span class="tag">rejected &mdash; reuse is refused, not silently accepted</span></div>
+    <div class="loop-stage"><span class="dot" style="background:var(--warn);"></span><span class="label">Crash mid-execution, outcome already observed</span><span class="tag">recovered from the event log, not re-run</span></div>
+    <div class="loop-stage" style="border:none;"><span class="dot" style="background:var(--warn);"></span><span class="label">Crash mid-execution, genuinely stuck</span><span class="tag">refuses a second execution rather than guessing</span></div>
+  </div>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:10px;">The real event sequence is <code>ActionRequested &rarr; ActionExecutionStarted &rarr; ActionOutcomeObserved</code>, and only <code>ActionOutcomeObserved</code> is ever read by the financial-state projection &mdash; requesting or starting an action can never itself move money.</p>
+  <div style="overflow-x:auto; margin-top:10px;"><table class="doctable"><thead><tr><th>Test run (live, this pass)</th><th>Result</th></tr></thead><tbody>
+    <tr><td>Stage 3 &mdash; behavioral preservation, all 160 failed payments + Gates A/B/C (replay, reject-on-mismatch, crash recovery)</td><td style="color:var(--good);">PASS</td></tr>
+    <tr><td>Stage 4 &mdash; Gate 1 (only ActionOutcomeObserved mutates state), Gate 2 (survives a fresh DB connection), Gate 3 (re-entry: resolved payment correctly flips to DO_NOT_RETRY), Gate 5 (no phantom facts)</td><td style="color:var(--good);">PASS</td></tr>
+  </tbody></table></div>
+</section>
+<section>
+  <div class="section-label">ORCHESTRATOR<span class="line"></span></div>
+  <h2 class="sec-title">Coordination, not a fourth brain</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/orchestrator/</code>'s <code>process_payment()</code> runs Controller, Risk, and Recovery independently on their own subjects, then merges whichever verdicts apply into one <code>CompoundCase</code> <em>without flattening them into a single score</em> &mdash; the module's own docstring is explicit that this is "coordination, not becoming a mysterious fourth brain." A genuine cross-domain conflict triggers one audit-only Discovery.AI investigation, under the identical firewall Controller uses alone.</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="verdict-metric" style="border-top:none; padding-top:0;"><span class="k">Verdicts produced, full 1000-payment corpus</span><span class="v">risk 143 &middot; recovery 160 &middot; controller 807</span></div>
+    <div class="verdict-metric"><span class="k">Compound cases (2+ verdicts on one subject)</span><span class="v">139 / 1000</span></div>
+    <div class="verdict-metric"><span class="k">Conflicts, offline (full transaction history)</span><span class="v">25 / 1000</span></div>
+    <div class="verdict-metric"><span class="k">Conflicts, contemporaneous (decision-time honest)</span><span class="v">10 / 1000</span></div>
+    <p class="verdict-note">These two conflict counts are reported separately on purpose, not averaged: the gap between them <em>is</em> the temporal-honesty fix (the same one Risk's own scoring uses) applied to conflict detection itself &mdash; judging a decision by everything that happened after it, versus only what was knowable at the time, are different questions with different honest answers.</p>
+  </div>
+</section>
+<section>
+  <div class="section-label">VERIFICATION<span class="line"></span></div>
+  <h2 class="sec-title">Checking the system's work, independently</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/verification/</code> implements 4 of the 11 properties <code>docs/NORTH_STAR.md</code> names for a full verification engine &mdash; a deliberate, bounded slice, stated as such in the module's own README, not the whole vision.</p>
+  <div style="overflow-x:auto;"><table class="doctable"><thead><tr><th>Property</th><th>Method</th><th>Real result</th></tr></thead><tbody>
+    <tr><td>Replay</td><td>Two independent rebuilds from raw input, compared by row counts + exact Decimal money sums + sha256</td><td>IDENTICAL, both the real dataset and a bridged Truman run</td></tr>
+    <tr><td>Temporal integrity</td><td>Every Risk verdict's evidence checked against its own <code>as_of</code> cutoff (Recovery/Controller have no as_of parameter &mdash; not audited rather than faked)</td><td>0 Payment-evidence violations across 143 real + 2,583 bridged decisions</td></tr>
+    <tr><td>Evidence grounding</td><td>Every verdict's evidence/entity id must resolve to a real graph node</td><td>Zero dangling ids, all three domains, both data sources</td></tr>
+    <tr><td>Decision idempotency</td><td>Same subject, same graph, called twice &mdash; byte-identical verdict (distinct from Action's execution idempotency above)</td><td>Identical, all six sampled cases</td></tr>
+  </tbody></table></div>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:10px;"><b style="color:var(--warn);">A real, separately-diagnosed anomaly, reported rather than hidden:</b> 41 non-Payment temporal-integrity flags trace to exactly two customers whose raw <code>payments.csv</code> rows predate their own <code>customers.csv</code> account-creation timestamp &mdash; a raw-data defect, named explicitly, and deliberately left unfixed as out of scope for this check.</p>
+  <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:8px;"><b style="color:var(--warn);">Stated honestly:</b> the other 7 properties NORTH_STAR names for a full verification engine &mdash; was the observation itself valid, was the policy/EV computation correct, was the outcome actually checked against its own events, and more &mdash; are not built. The module's own README lists them as open, not solved quietly.</p>
+</section>
+<section>
+  <div class="section-label">A DOCUMENTATION DISCREPANCY, NAMED RATHER THAN REPEATED<span class="line"></span></div>
+  <h2 class="sec-title">The graph is real. It isn't what one internal doc calls it.</h2>
+  <p class="sec-sub" style="max-width:76ch;"><code>financial_system/financial_graph/repository.py</code>'s own docstring calls itself "a Neo4j-shaped store, backed by SQLite" &mdash; a real, stated reason: this environment has no Docker and no <code>neo4j</code> driver installed, designed so a future <code>Neo4jGraphRepository</code> could swap in against the same interface. One internal design doc (<code>docs/ARCHITECTURE.md</code>) informally labels this layer "Knowledge Graph" running on "Neo4j." That's aspirational language left over from an earlier draft, not what's actually deployed &mdash; worth naming here rather than quietly repeating on a page meant to be exact about what's real.</p>
+  <p class="sec-sub" style="max-width:76ch; margin-top:12px;">Also stated plainly: the graph schema today is flat and single-level &mdash; 10 real node types (Customer, Merchant, Device, PaymentInstrument, Order, Payment, Settlement, BankTransaction, Fee, Refund), no <code>Account</code>/<code>PaymentIntent</code>/<code>PaymentAttempt</code> abstraction layer, and no separate World/Knowledge/Evidence graph split. <code>docs/NORTH_STAR.md</code> proposes both as future architecture ("Heimdall should eventually contain three distinct but connected graph structures") &mdash; neither exists today.</p>
 </section>`; }
 
 function docsHTML(){ return `
@@ -382,7 +470,24 @@ then queried by the exact same recovery_agent.py / risk_agent.py the frozen-data
       <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">Simulated gateway, not a live payment API.</b> The harness the architecture plugs a real gateway into.</li>
       <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">decision_score is a category base rate</b>, never a per-instance prediction. 0% false-retry would require an oracle.</li>
       <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">Not fully event-sourced.</b> "What did the system decide" is answerable only for decisions that led to a real, recorded action.</li>
-      <li style="font-size:12.5px; color:var(--muted); line-height:1.6;"><b style="color:#fff;">No general ledger.</b> Two targeted accounting checks exposed a real gap without building a second, unproven financial subsystem.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6; padding-bottom:12px; border-bottom:1px dashed var(--border);"><b style="color:#fff;">No general ledger.</b> Two targeted accounting checks exposed a real gap without building a second, unproven financial subsystem.</li>
+      <li style="font-size:12.5px; color:var(--muted); line-height:1.6;"><b style="color:#fff;">Each domain investigates in isolation.</b> The Orchestrator merges verdicts and detects conflicts across domains, but there is no mechanism today for one domain's investigation to inform another's &mdash; named explicitly in <code>docs/FUTURE_ARCHITECTURE.md</code> as the next real boundary, not solved by the Orchestrator's existing conflict-merge.</li>
+    </ul>
+  </div>
+</section>
+<section>
+  <div class="section-label">WHAT ISN'T PROVEN<span class="line"></span></div>
+  <h2 class="sec-title">Said plainly, because a project that never says this isn't trustworthy</h2>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <ul style="list-style:none; display:flex; flex-direction:column; gap:10px; margin:0; padding:0;">
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">Production-scale deployment, or performance at real payment-processor volume</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">Universal fraud detection &mdash; Risk is one dataset's device-sharing signal, not a general fraud model</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">Generalization to a real institution's actual data, conventions, or scale</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">Credit intelligence, AML, treasury, insurance, or markets reasoning &mdash; none built</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">A general economic engine &mdash; one narrow Expected Value gate exists (see <a href="#" onclick="go('system'); return false;">System</a>), not CLV, opportunity cost, or network costs</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">An autonomous research-to-world-extension loop &mdash; the provenance catalog and drift detector are real, static tools a human runs, not a self-expanding system</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">A universal world registry, or a World/Knowledge/Evidence graph split &mdash; one flat financial graph exists today</li>
+      <li style="font-size:12px; color:var(--muted); line-height:1.6;">Counterfactual or adversarial world generation beyond the one drift-detector comparison already shown</li>
     </ul>
   </div>
 </section>
