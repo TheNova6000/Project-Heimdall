@@ -14,6 +14,9 @@ __pycache__/
 financial_system/data/phase4_results/
 financial_system/data/phase5_results/
 
+# Local planning notes -- not part of the public submission
+DEMO_VIDEO_PLAN.md
+
 # OS
 .DS_Store
 Thumbs.db

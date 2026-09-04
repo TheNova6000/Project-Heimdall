@@ -263,6 +263,21 @@ footer p{color:var(--muted-2); font-size:11.5px;}
 .truman-day b{color:var(--text); font-size:13px;}
 .truman-meta{font-size:9.5px; color:var(--muted-2); line-height:1.5;}
 
+/* reports page */
+.report-item{border:1px solid var(--border); margin-bottom:10px; background:var(--panel-2);}
+.report-item summary{padding:14px 16px; cursor:pointer; display:flex; justify-content:space-between; align-items:baseline; gap:16px; list-style:none;}
+.report-item summary::-webkit-details-marker{display:none;}
+.report-item summary .rt{font-weight:700; font-size:13.5px; color:var(--text); flex:none;}
+.report-item summary .rh{font-size:11px; color:var(--muted-2); text-align:right;}
+.report-item:hover summary{background:rgba(255,255,255,0.02);}
+.report-item[open] summary{border-bottom:1px solid var(--border);}
+.report-body{padding:16px;}
+.report-field{margin-bottom:12px;}
+.report-field:last-child{margin-bottom:0;}
+.report-field .fl{font-size:9.5px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted-2); margin-bottom:4px;}
+.report-field .fv{font-size:12px; color:var(--muted); line-height:1.65;}
+@media (max-width:640px){.report-item summary{flex-direction:column; gap:4px;} .report-item summary .rh{text-align:left;}}
+
 /* settings page */
 .settings-form{display:flex; flex-direction:column; gap:16px; max-width:520px;}
 .settings-form label{font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted-2); display:block; margin-bottom:6px;}

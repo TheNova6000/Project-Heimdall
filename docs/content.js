@@ -523,6 +523,156 @@ PYTHONPATH=. uvicorn api.main:app --reload</pre></div>
   </div>
 </section>`; }
 
+const REPORTS = [
+  {
+    id: 'risk-eval', title: 'Risk Evaluation', headline: '100% precision · 96.3% recall · 0% FPR',
+    question: "Does Risk's deterministic device score actually separate real fraud rings from ordinary shared devices?",
+    method: 'Score every device shared by 2+ customers with the real weighted formula (burst_density 0.50, burst_amount_clustering 0.30, n_sharers 0.15, account_age 0.05); classify HIGH/MEDIUM/LOW; compare against the dataset\'s own planted ground truth.',
+    input: 'financial_graph.db &mdash; 371 devices, 6 planted fraud rings, 8 deliberately-benign shared-device traps (16 total test cases the generator built specifically to punish a naive detector)',
+    result: '100% precision, 96.3% recall, 0% false-positive rate &mdash; <code>financial_system/risk/runner.py</code>',
+    interpretation: 'Every planted fraud ring was caught; the one recall miss is a gap, not a false alarm; every benign trap (an ordinary shared family device) was correctly released, not flagged.',
+    limitations: "One dataset, one generator's fraud-ring pattern (burst timing + amount clustering). Not validated against real-world fraud, which may not look like this. \"0% FPR\" is exact on 16 specifically-planted traps &mdash; not a general false-positive-rate claim at scale.",
+    conclusion: 'The weighted-score design is sound for the exact pattern it was built to catch. This is evidence the implementation works, not evidence of general fraud-detection capability.',
+  },
+  {
+    id: 'recovery-eval', title: 'Recovery Evaluation', headline: '87/87 category accuracy · 39.6% false-retry rate',
+    question: 'Does Recovery correctly identify which failure categories are worth retrying?',
+    method: "Classify every one of the corpus's category-eligible payment failures (correctly attempted vs. not) against the real decline-code taxonomy and ground-truth failure_reason labels.",
+    input: '87 recoverable-category payments, financial_graph.db',
+    result: '87/87 (100%) category accuracy &mdash; <code>financial_system/recovery/runner.py</code>; 39.6% false-retry rate, matching the categories\' own weighted historical base rate (39.3% expected)',
+    interpretation: "100% is category-classification accuracy, NOT successful-recovery accuracy &mdash; a case counts as correct when Recovery attempted retry on a genuinely recoverable category, independent of whether that specific retry actually succeeded. The 39.6% false-retry rate is the honest cost: even a correct category-level decision fails 4 times in 10, because decision_score is a base rate, never a per-instance prediction.",
+    limitations: 'The corpus\'s own failure labels come from a category-level coin flip (<code>retry_would_succeed = random() &lt; spec[...]</code>) with zero connection to amount, customer, device, or timing &mdash; testing a fancier per-instance model on this corpus would be circular, since no real instance-level signal exists to learn from.',
+    conclusion: '87/87 proves the taxonomy lookup is implemented correctly, not that retries succeed reliably. Building an ML classifier on this specific corpus would be scientifically dishonest.',
+  },
+  {
+    id: 'controller-eval', title: 'Controller Evaluation', headline: '555/610 operational · 47/50 honest-exception rate',
+    question: 'Does the deterministic reconciliation check correctly separate explainable settlement gaps from genuinely unexplained ones?',
+    method: "Run the full 610-settlement corpus through Controller's deterministic check; separately, evaluate a targeted 50-case sample against the dataset's real 9-category root-cause ground truth.",
+    input: '610 real settlements, financial_graph.db',
+    result: '555/610 (91.0%) resolved cleanly (PASS or duplicate-detected RESOLVE) &mdash; <code>financial_system/reconciliation/runner.py</code>; 47/50 (94.0%) honest-exception rate on the targeted sample',
+    interpretation: 'These two numbers measure different things and must not be merged: 555/610 is the full corpus\'s operational outcome; 47/50 checks specifically whether Controller resists guessing when it genuinely doesn\'t have an explanation.',
+    limitations: "Controller's deterministic check handles exactly 1 of the dataset's 9 real root-cause categories (duplicate line items). The other 8 (partial refunds, currency conversion, missing settlements, bank adjustments, split settlements, fee discrepancies, timing skew) rely on Discovery.AI's narrative or stay unresolved.",
+    conclusion: "Controller is real and honest, but the least automated of the three domains &mdash; most gap categories still need investigation or a human, not a formula.",
+  },
+  {
+    id: 'temporal-leakage', title: 'Temporal Leakage Investigation & Fix', headline: 'A real bug, found and fixed before submission',
+    question: "Could Risk's score for a device be influenced by information that hadn't happened yet at decision time?",
+    method: "Audit every real Risk verdict's evidence against an as_of cutoff equal to the payment's own timestamp.",
+    input: 'Every real Risk verdict, both the frozen dataset and bridged Truman runs',
+    result: "Found: an earlier version of the burst-window signals scanned a device's FULL transaction history, including transactions AFTER the payment being scored. Fixed by introducing a reusable temporal observation boundary (an <code>as_of</code> parameter) scoping every signal query to only what existed at decision time.",
+    interpretation: 'Post-fix, <code>financial_system/verification/temporal.py</code> re-audits every real Risk verdict: 0 Payment-evidence violations across 143 real + 2,583 bridged decisions.',
+    limitations: 'The <code>as_of</code> boundary exists only for Risk today. Recovery and Controller have no equivalent parameter and are not audited for this class of leakage &mdash; a stated open gap, not an assumed-safe one.',
+    conclusion: "The clearest example in this project of a real correctness bug an adversarial test caught before submission, not after &mdash; and the reason \"only observe what was knowable at decision time\" is stated as an architectural principle, not a nice-to-have.",
+  },
+  {
+    id: 'replay', title: 'Replay Verification', headline: 'IDENTICAL, both data sources',
+    question: 'Does rebuilding the entire financial state from raw input twice produce byte-identical results?',
+    method: 'Two independent rebuilds from the same raw CSVs, compared by row counts, exact Decimal money sums, and a sha256 content hash.',
+    input: 'The real Heimdall dataset and a bridged Truman run',
+    result: 'IDENTICAL on both &mdash; <code>financial_system/verification/replay.py</code>',
+    interpretation: 'Proves the ingestion pipeline itself is deterministic, with no hidden nondeterminism (dict ordering, floating point, uncontrolled randomness).',
+    limitations: 'Replay checks the state-BUILDING pipeline, not whether a decision was correct &mdash; a wrong-but-deterministic decision would still replay identically.',
+    conclusion: 'A necessary, not sufficient, correctness property &mdash; and a genuinely proven one.',
+  },
+  {
+    id: 'action-idempotency', title: 'Action Idempotency', headline: 'Stage 3 PASS · Stage 4 PASS (re-run live this session)',
+    question: 'Can the same authorized action be executed exactly once, even across a crash?',
+    method: 'Stage 3 (behavioral preservation across all 160 failed payments, plus Gates A/B/C) and Stage 4 (Gates 1/2/3/5) test suites.',
+    input: 'The full 160-payment recoverable-category set, real Action/ActionAttempt/ActionCase store',
+    result: 'Both PASS, re-run live for this documentation: same key + same params &rarr; cached result returned; same key + different params &rarr; rejected; crash mid-execution &rarr; recovered from the event log, or refused rather than guessed; only <code>ActionOutcomeObserved</code> ever mutates financial state.',
+    interpretation: 'A real distributed-systems correctness property (idempotency + crash recovery), not something typically found at hackathon scale.',
+    limitations: 'Tested against the local SQLite-backed action store under single-process conditions &mdash; not tested under concurrent multi-process access or real network partitions.',
+    conclusion: 'A solid foundation. Concurrency and distributed-lock hardening are future work, not claimed today.',
+  },
+  {
+    id: 'live-recovery-loop', title: 'Live Recovery Loop', headline: 'A real retry that honestly failed again',
+    question: 'Does a real RETRY decision, executed inside a running simulation, produce a real, sometimes-honestly-failing outcome?',
+    method: "Run the live bridge against a small (20-50 person) Truman world; execute scheduled retries against the person's real, then-current balance.",
+    input: 'A live, seeded Truman environment (this session\'s own run, seed=42)',
+    result: "A genuine RETRY on <code>pay_bridge_txn_00000027</code> was scheduled and executed the next day &mdash; it failed again, honestly, because the person's balance still hadn't recovered.",
+    interpretation: "Proves the loop isn't a scripted success story: a real retry against a real, still-insufficient balance produces a real second failure, consistent with the project's own documented ~39.6% false-retry rate.",
+    limitations: 'Small population (20-50 people), not stress-tested at the batch bridge\'s larger scale.',
+    conclusion: 'Genuinely closed-loop, re-verified this session, not just historically documented.',
+  },
+  {
+    id: 'live-risk-loop', title: 'Live Risk Loop', headline: '239 decisions · 1 device blocked · 35 attempts mechanically prevented',
+    question: 'Does a real HOLD decision, executed inside a running simulation, actually and mechanically block future purchases?',
+    method: 'Run the live bridge (seed=42, population=30, 90 days), scoring every device with new activity each day, calling <code>block_device()</code> on HOLD.',
+    input: 'A seeded 90-day Truman run',
+    result: '239 Risk decisions (208 RELEASE, 31 REVIEW); 1 device blocked (<code>dev_00000d</code>); 35 subsequent purchase attempts from that device mechanically prevented &mdash; all 35 of which would have succeeded if not blocked.',
+    interpretation: 'A real counterfactual makes this checkable, not just counted: the identical seed run WITHOUT the live loop shows person_00017\'s day-49 &#8377;41.62 purchase actually succeeding (balance drops 2402.25&rarr;2360.63); the live-loop run shows the same attempt blocked, balance unchanged.',
+    limitations: 'One run, one seed. That all 35 prevented attempts "would have succeeded" reflects this population\'s balance distribution, not a general claim that blocked devices always have sufficient funds.',
+    conclusion: 'A real, mechanical, checkable enforcement action &mdash; not a logged recommendation nobody acted on.',
+  },
+  {
+    id: 'truman-determinism', title: 'Truman Determinism', headline: 'Reproduced across seeds — and again this session',
+    question: 'Does the same seed reproduce the exact same simulated world?',
+    method: 'Run the engine twice with an identical seed; compare outputs. The balance/income failure curve specifically checked across three seeds (42, 7, 2026).',
+    input: 'Simulation/world/engine.py, seeded SimulationEngine',
+    result: "Identical counts and case-type distributions across repeats. This session's own re-run (seed=42) reproduced the IDENTICAL failed-payment sequence (same payment id, same devices, same day-by-day decisions) as an earlier, independent session's run.",
+    interpretation: 'Real, load-bearing determinism &mdash; every other verification here (replay, drift detection) depends on this holding.',
+    limitations: 'Entity IDs (<code>uuid4()</code>) are NOT reproducible across runs &mdash; only counts, case-type distributions, and RNG-driven decisions are. Stated explicitly, not glossed over.',
+    conclusion: "Solid. The one honestly-stated exception (entity IDs) doesn't undermine the property that actually matters: behavioral reproducibility.",
+  },
+  {
+    id: 'mechanism-eval', title: 'Mechanism Evaluation', headline: 'Two mechanisms, causally ordered, tested',
+    question: "Do Truman's causal failure mechanisms — not label assignment — actually and correctly gate purchase outcomes?",
+    method: '<code>Simulation/tests/test_mechanisms.py</code>: prove <code>InsufficientFundsMechanism</code> identical to the real balance check including the exact amount==balance boundary; prove <code>ExpiredInstrumentMechanism</code> fires iff day &ge; expiry regardless of balance; test the fixed causal ordering itself.',
+    input: 'Simulation/world/mechanisms.py',
+    result: 'Real, specific, passing tests &mdash; not just documented behavior.',
+    interpretation: "The instrument-validity check runs before the funds check by design, mirroring how a real card network actually authorizes a transaction: an expired card is declined before the cardholder's balance is ever consulted.",
+    limitations: 'Only two mechanisms exist today. Authentication failure and issuer availability are named as future mechanisms, not built.',
+    conclusion: 'A real, small, correctly-ordered, tested mechanism pipeline. The foundation is sound; the coverage is intentionally narrow.',
+  },
+  {
+    id: 'drift-detection', title: 'Bridge / Drift Detection', headline: 'One real, statistically significant finding',
+    question: "Are Heimdall's live decisions against Truman consistent with Truman's own KNOWN generative mechanisms?",
+    method: 'Three checks: Recovery retry timing vs. Truman\'s payday mechanism; Recovery\'s stated confidence vs. realized retry-success rate; device-sharing intensity vs. Risk score.',
+    input: 'The live Recovery and Risk loops\' own recorded runs',
+    result: 'One real, statistically significant drift found (p=2.6&times;10&#8315;&#8310;): Recovery\'s stated 45% confidence for <code>insufficient_funds</code> didn\'t match Truman\'s realized 0% retry-success rate in the live loop.',
+    interpretation: "Traced to a specific, real cause &mdash; the live loop's fixed 1-day retry window colliding with Truman's monthly-payday-only income model &mdash; not a flaw in Heimdall's own decision logic.",
+    limitations: 'Three checks only, each pinned to one specific mechanism &mdash; not a general model-consistency score.',
+    conclusion: "The project's strongest argument for why simulate at all: a simulation is valuable not because it's real, but because its mechanisms are known, making this kind of controlled, diagnosable evaluation possible in the first place.",
+  },
+  {
+    id: 'provenance', title: 'Provenance Validation', headline: '28 implemented + 15 proposed entries, all verified',
+    question: 'Does every research-grounded or modeling-assumption constant in Truman actually match what it claims to cite?',
+    method: '<code>Simulation/tests/test_provenance.py</code>: verify every "implemented" catalog entry\'s location/value against actual current source via <code>ast.literal_eval</code>; verify every research-grounded citation is a real substring of Research.md; re-scan source for provenance-tagged constants and assert every one has a catalog entry.',
+    input: 'Simulation/provenance/catalog.py, Simulation/docs/Research.md',
+    result: '28 implemented entries + 15 proposed (not-yet-built) entries, all passing.',
+    interpretation: 'A real, automated discipline preventing a modeling assumption from silently being presented as empirically grounded, or a citation from going stale as code changes.',
+    limitations: 'Not CI-enforced continuously &mdash; only re-verified when pytest is run. Doesn\'t catch a tag\'s stated meaning being edited without its value changing. Three Phase 2 structural decisions have no attached numeric constant and are named as exceptions rather than silently omitted.',
+    conclusion: 'Real, tested, and honest about its own blind spots &mdash; which is itself the point of building it.',
+  },
+];
+
+function reportItem(r){
+  const field = (label, val) => `<div class="report-field"><div class="fl">${label}</div><div class="fv">${val}</div></div>`;
+  return `
+  <details class="report-item" id="${r.id}">
+    <summary><span class="rt">${r.title}</span><span class="rh">${r.headline}</span></summary>
+    <div class="report-body">
+      ${field('Question', r.question)}
+      ${field('Method', r.method)}
+      ${field('Input / Dataset / World', r.input)}
+      ${field('Result', r.result)}
+      ${field('Interpretation', r.interpretation)}
+      ${field('Limitations', r.limitations)}
+      ${field('Conclusion', r.conclusion)}
+    </div>
+  </details>`;
+}
+
+function reportsHTML(){ return `
+<section class="hero" style="padding-top:48px; padding-bottom:20px;">
+  <div class="section-label">REPORTS<span class="line"></span></div>
+  <h2 class="sec-title">Twelve real experiments, not isolated numbers on cards</h2>
+  <p class="sec-sub" style="max-width:74ch;">Every metric anywhere else on this site traces back to one of these. Each report states its question, its method, exactly what it ran against, its real result, what that result does and doesn't mean, its limitations, and its conclusion &mdash; click a report to expand it.</p>
+</section>
+<section>
+  ${REPORTS.map(reportItem).join('')}
+</section>`; }
+
 function settingsHTML(){ return `
 <section class="hero" style="padding-top:48px; padding-bottom:20px;">
   <div class="section-label">SETTINGS<span class="line"></span></div>

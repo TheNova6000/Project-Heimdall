@@ -102,6 +102,7 @@ const pages = [
   { id:'heimdall', label:'Heimdall' },
   { id:'system', label:'System' },
   { id:'docs', label:'Documentation' },
+  { id:'reports', label:'Reports' },
   { id:'settings', label:'Settings' },
   { id:'about', label:'About' },
 ];
@@ -135,6 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `<div class="page" id="heimdall">${heimdallHTML()}</div>`,
     `<div class="page" id="system">${systemHTML()}</div>`,
     `<div class="page" id="docs">${docsHTML()}</div>`,
+    `<div class="page" id="reports">${reportsHTML()}</div>`,
     `<div class="page" id="settings">${settingsHTML()}</div>`,
     `<div class="page" id="about">${aboutHTML()}</div>`,
   ].join('');
