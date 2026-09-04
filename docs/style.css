@@ -191,7 +191,7 @@ h2.sec-title{font-size:clamp(22px,2.8vw,32px); margin-bottom:12px;}
 .chat-composer input:focus{outline:none; border-color:var(--hud);}
 .chat-composer input:disabled{opacity:0.4;}
 .graph-panel-shell{min-height:0; display:flex; flex-direction:column;}
-#demo-cy{width:100%; flex:1; min-height:0; cursor:default;}
+#demo-cy, #live-cy{width:100%; flex:1; min-height:0; cursor:default;}
 .demo-legend{display:flex; flex-wrap:wrap; gap:12px; padding:10px 16px; border-top:1px solid var(--border); font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.03em; flex:none;}
 .demo-legend-item{display:flex; align-items:center; gap:6px;}
 .demo-legend-swatch{width:9px; height:9px; border:1.6px solid; display:inline-block; flex:none;}
