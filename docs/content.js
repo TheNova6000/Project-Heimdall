@@ -46,7 +46,7 @@ function homeHTML(){ return `
   </div>
   <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
     <div class="loop-title" style="margin-bottom:10px;">// HOW THIS SITE IS WIRED</div>
-    <p style="font-size:13px; color:var(--muted); line-height:1.7;">This page is static (GitHub Pages). The Live System page calls a small FastAPI backend that imports <code>financial_system</code>'s real, unmodified decision modules directly and queries the real database on every request &mdash; there is no cache and no precomputed answer file anywhere in this repo. The chat panel calls Anthropic's API using a key you provide yourself in Settings; we never see or store it.</p>
+    <p style="font-size:13px; color:var(--muted); line-height:1.7;">This page is static (GitHub Pages). The Live System page calls a small FastAPI backend that imports <code>financial_system</code>'s real, unmodified decision modules directly and queries the real database on every request &mdash; there is no cache and no precomputed answer file anywhere in this repo. Its <b style="color:#fff;">TRUMAN LIVE</b> toggle goes further: a real, seeded simulation ticking forward in the backend's memory, one real day at a time &mdash; see <a href="#" onclick="go('truman'); return false;">Truman</a> for how that actually works. The chat panel calls your chosen LLM provider using a key you provide yourself in Settings; we never see or store it.</p>
   </div>
 </section>`; }
 
@@ -102,6 +102,45 @@ function trumanHTML(){ return `
   <p class="sec-sub" style="max-width:76ch;">A drift detector then checks Heimdall's live decisions against Truman's own <em>known</em> generative process &mdash; the one advantage a built simulator has over a real dataset. It already found one real, statistically significant case (p=2.6&times;10&#8315;&#8310;): Recovery's stated 45% confidence for <code>insufficient_funds</code> didn't match Truman's realized 0% retry-success rate in the live loop &mdash; traced to the loop's fixed 1-day retry window colliding with Truman's monthly-payday-only income model, not a flaw in Heimdall's own logic.</p>
 </section>
 <section>
+  <div class="section-label">TRY IT LIVE<span class="line"></span></div>
+  <h2 class="sec-title">This isn't just described &mdash; it's running</h2>
+  <p class="sec-sub" style="max-width:76ch;">The <a href="#" onclick="go('live'); return false;">Live System</a> page has a <b style="color:#fff;">TRUMAN LIVE</b> toggle, backed by <code>api/truman_env.py</code>: one real, seeded <code>SimulationEngine</code> held in the backend's own memory, ticked forward one real day at a time on request &mdash; not a script that runs to completion once and hands back a static result.</p>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:10px;">// WHAT "ADVANCE ONE DAY" ACTUALLY DOES</div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Any retry scheduled for today executes first</span><span class="tag">engine.attempt_retry()</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">The world ticks one real day forward</span><span class="tag">engine.run_one_tick()</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">The graph is rebuilt from the new state</span><span class="tag">the same pipeline the batch bridge uses</span></div>
+    <div class="loop-stage"><span class="dot"></span><span class="label">Every new failed payment is scored by Recovery</span><span class="tag">a real RETRY schedules a real re-attempt tomorrow</span></div>
+    <div class="loop-stage" style="border:none;"><span class="dot"></span><span class="label">Every device with new activity is scored by Risk</span><span class="tag">a real HOLD calls engine.block_device() &mdash; a mechanical consequence, not a log line</span></div>
+  </div>
+  <p class="sec-sub" style="max-width:76ch; margin-top:16px;">Stated honestly, not discovered by poking at it: this environment is <b style="color:#fff;">ephemeral</b> &mdash; it lives in the backend's memory and resets to day 0 whenever the free-tier server restarts. Its scope is <b style="color:#fff;">Recovery and Risk only</b>, the two domains with a proven live loop; Controller has no live loop yet, so Truman Live has no Settlement cases, and the Sub-Agent Investigation phase is skipped here because no live investigation endpoint exists yet. A freshly-started environment begins with zero failed payments and zero eligible devices &mdash; advance a few days to let real cases actually appear.</p>
+</section>
+<section>
+  <div class="section-label">METHODOLOGY<span class="line"></span></div>
+  <h2 class="sec-title">Cited where grounded, labeled where not</h2>
+  <p class="sec-sub" style="max-width:76ch;">Every constant in Truman is tagged one of three ways in <code>Simulation/docs/Research.md</code>: grounded in a cited source, a named modeling assumption, or an uncited placeholder. Nothing is silently upgraded from one tier to another.</p>
+  <div style="overflow-x:auto;"><table class="doctable"><thead><tr><th>Constant</th><th>Status</th><th>Source</th></tr></thead><tbody>
+    <tr><td>Income log-normal shape</td><td>Grounded</td><td>Aitchison &amp; Brown 1957; cross-checked against a Pareto-lognormal income study and Schield 2018</td></tr>
+    <tr><td>Settlement delay (T+1)</td><td>Grounded, simplification named</td><td>Stripe's own published 1&ndash;3 business day settlement window &mdash; kept at the conservative end rather than sampled, to avoid perturbing the run's RNG sequence</td></tr>
+    <tr><td>Card validity window (3&ndash;5 yrs)</td><td>Grounded</td><td>WalletHub and Capital One's published card-expiration ranges</td></tr>
+    <tr><td>Savings-sweep fraction (15%)</td><td>Named assumption</td><td>The popular "50/30/20" budgeting rule (Elizabeth Warren, <i>All Your Worth</i>, 2005) &mdash; a defensible round number, not independently verified</td></tr>
+    <tr><td>Fraud rate (future work, not yet built)</td><td>Grounded</td><td>Kansas City Fed: 17.6bps of transaction value in 2023, up from 7.8bps in 2011</td></tr>
+    <tr><td>Household size weights</td><td>Placeholder</td><td>No citation search was performed &mdash; labeled, not hidden</td></tr>
+  </tbody></table></div>
+  <div class="panel" style="margin-top:16px;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:8px;">// A NUMBER WE FOUND AND DELIBERATELY DID NOT ADOPT</div>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">A wage-inequality paper reports &sigma;&approx;0.5 for log wages &mdash; almost exactly this project's own <code>INCOME_LOGNORMAL_SIGMA=0.5</code>. It wasn't cited: the source PDF couldn't be independently verified, and wage dispersion isn't quite the same population as "income from all sources, across every adult." A tempting coincidence isn't evidence.</p>
+  </div>
+  <div class="panel" style="margin-top:16px;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:8px;">// A NEGATIVE RESULT, KEPT NOT DELETED</div>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">Bucketing purchase failures by income group alone shows almost no signal &mdash; below-median-income persons actually failed <i>less</i> often (0.94% vs 1.15%). The real driver is a person's balance/income <i>ratio</i> at the moment of purchase, not income level by itself &mdash; the monotonic 96%&rarr;0% curve above is the ratio-bucketed version. The income-only result stays in the record because a hypothesis that fails one honest test and succeeds under another is more credible than one only ever tested the way that worked.</p>
+  </div>
+  <div class="panel" style="margin-top:16px;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:8px;">// AN ALTERNATIVE DESIGN, TRIED AND REJECTED</div>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">The live Recovery loop's first working version sampled a small fixed number of new failures per checkpoint at the batch bridge's usual ~300-person scale, to keep LLM cost bounded. That's still cherry-picking out of a large population &mdash; caught in review, not after shipping &mdash; and fixed by shrinking the world instead of filtering the stream: a smaller population (20&ndash;50 people) where every real failure gets a real decision. The fix solved the honesty problem and the performance problem at the same time.</p>
+  </div>
+</section>
+<section>
   <div class="section-label">MATURITY, STATED HONESTLY<span class="line"></span></div>
   <h2 class="sec-title">What's real vs. still a diagram</h2>
   <div class="roadgrid">
@@ -151,6 +190,20 @@ function discoveryHTML(){ return `
     <div class="verdict-metric" style="border-top:none; padding-top:0;"><span class="k">Investigations actually called, the judged run</span><span class="v">0 / 610</span></div>
     <p class="verdict-note">Not a limitation &mdash; every settlement in that run had a clean, deterministic explanation. Discovery.AI is a fallback for genuine uncertainty, not a step every case passes through.</p>
   </div>
+</section>
+<section>
+  <div class="section-label">ALTERNATIVES CONSIDERED, AND REJECTED<span class="line"></span></div>
+  <h2 class="sec-title">Why not just let the model decide?</h2>
+  <p class="sec-sub" style="max-width:76ch;">Discovery.AI ships its own <code>GroundAgent</code> with a hardcoded default retriever set. Reusing it directly was considered and rejected: it would mean either patching Discovery.AI's own source, or silently letting web retrievers answer financial questions &mdash; neither acceptable. <code>discovery_adapter/</code> exists specifically so exactly one narrow module touches Discovery.AI's internals, grounded only in this project's own real financial state.</p>
+  <p class="sec-sub" style="max-width:76ch;">The deterministic pass always runs first, and the model is never handed raw ledger numbers to do arithmetic on &mdash; an explicit design decision, not an oversight: a model asked "why do these differ" free-associates onto the first plausible-looking fact it sees, as the incident below shows.</p>
+</section>
+<section>
+  <div class="section-label">A REAL BUG THE TESTS CAUGHT<span class="line"></span></div>
+  <h2 class="sec-title">An unanchored question, and the fix</h2>
+  <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">An early smoke test asked Discovery.AI an unanchored "why do these differ" question. It pattern-matched onto the first fee/tax fact in view and reported 0.75 confidence in a cause that was off by <b style="color:#fff;">29&times;</b> &mdash; a real gap of &#8377;456.92 explained by a &#8377;15.74 fee. The fix: name the exact unexplained amount in the question itself, turning free association into a falsifiable check the model can actually fail correctly on.</p>
+  </div>
+  <p class="sec-sub" style="max-width:76ch; margin-top:16px;"><b style="color:var(--warn);">Stated honestly:</b> the investigation loop's step budget (<code>MAX_STEPS=3</code>) is deliberately owned by the calling agent, not the model &mdash; but the specific number 3, versus 2 or 5, has no documented derivation in this repo.</p>
 </section>`; }
 
 function heimdallHTML(){ return `
@@ -178,6 +231,11 @@ function heimdallHTML(){ return `
         <span class="tool-chip">edges_to(order, "belongs_to")</span>
         <span class="tool-chip">FAILURE_TAXONOMY lookup</span>
       </div>
+      <div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);">
+        <div class="loop-title" style="margin-bottom:6px;">// WHY THIS DESIGN, NOT A CLASSIFIER</div>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7;">The real question isn't "should we retry failed payments" &mdash; it's which failures are worth retrying, reliably, not by guessing. Recovery keeps two things separate on purpose: whether a <em>category</em> is recoverable at all, and whether <em>this instance</em> would actually succeed &mdash; the second is genuinely unknown, so <code>decision_score</code> stays the category's own historical base rate, stated as a base rate, never dressed up as a per-instance prediction.</p>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:8px;"><b style="color:var(--warn);">Stated honestly:</b> these seven base rates are asserted as "a real gateway's own decline-code taxonomy," not independently derived from external gateway data in this repo &mdash; and they are the identical values <code>data_generator/generate_dataset.py</code> uses to <em>generate</em> the synthetic ground truth. The taxonomy is internally consistent with this dataset by construction, not separately validated against a real payment processor.</p>
+      </div>
     </div>
     <div class="subsys">
       <h3 style="color:var(--hud);">Risk &mdash; a weighted device score</h3>
@@ -194,6 +252,11 @@ function heimdallHTML(){ return `
         <span class="tool-chip">densest_window(60min)</span>
         <span class="tool-chip">score_signals() weighted sum</span>
       </div>
+      <div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);">
+        <div class="loop-title" style="margin-bottom:6px;">// WHY THESE WEIGHTS, NOT A TRAINED MODEL</div>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7;">Deterministic on purpose &mdash; every weight here is a number a fraud analyst can read and argue with. The weights aren't a prior: <code>account_age</code> sits at 0.05 because it was checked against the real generator and verified to <em>not</em> differ between fraud-ring and normal accounts in this dataset &mdash; real-world meaningful, but not pretended to carry signal it doesn't have here. <code>n_sharers</code> alone is also true of an ordinary shared family device (the dataset plants exactly this trap on purpose), so it stays a moderate 0.15. Burst density and amount-clustering carry the real weight (0.50 + 0.30) because they're what the fraud-ring generator actually encodes &mdash; scored over the <em>densest</em> 60-minute window rather than a total-payments/span ratio, since a ring member's other, ordinary purchases on the same shared device would otherwise dilute that ratio to near-zero.</p>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:8px;"><b style="color:var(--warn);">Stated honestly:</b> the two tier cutoffs (0.3, 0.6) and the 60-minute window's margin over the generator's actual 45-minute burst span have no documented derivation in this repo &mdash; working values, not the output of a calibration study.</p>
+      </div>
     </div>
     <div class="subsys">
       <h3 style="color:var(--warn);">Controller &mdash; reconciliation arithmetic</h3>
@@ -203,6 +266,11 @@ function heimdallHTML(){ return `
         <span class="tool-chip">edges_from(settlement, "deposited_as")</span>
         <span class="tool-chip">edges_from(settlement, "contains")</span>
         <span class="tool-chip">Counter() duplicate detection</span>
+      </div>
+      <div style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);">
+        <div class="loop-title" style="margin-bottom:6px;">// WHY ONE CHECK, NOT NINE</div>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7;">This dataset's real ground truth has 9 distinct settlement-gap root causes &mdash; duplicate records, partial refunds, currency conversion, missing settlements, bank adjustments, split settlements, fee discrepancies, timing skew, and clean matches. Controller's deterministic check handles exactly one &mdash; duplicate line items &mdash; chosen because it's case-general, not overfit to one anomaly's specific mechanics. The other eight are left to Discovery.AI's narrative or reported unresolved, on purpose: this is <em>operational</em> reconciliation (did the money that should have arrived, arrive), not a full <em>accounting</em> reconciliation (a global debits-equal-credits invariant) &mdash; a named boundary, not an oversight, since the larger claim would need a double-entry subsystem this project doesn't have.</p>
+        <p style="font-size:11.5px; color:var(--muted); line-height:1.7; margin-top:8px;"><b style="color:var(--warn);">Stated honestly:</b> the &#8377;1.00 reconciliation tolerance has no documented derivation in this repo &mdash; a working constant, not a calibrated one.</p>
       </div>
     </div>
   </div>
@@ -254,6 +322,24 @@ Real, unmodified decision functions
     | GraphRepository.get_node() / edges_from() / edges_to()
     v
 financial_graph.db  (the real, frozen, judged dataset -- read-only)</pre></div>
+  </div>
+  <div class="panel" style="margin-top:20px;"><div class="corner tl"></div><div class="corner br"></div>
+    <div class="loop-title" style="margin-bottom:14px;">// DATA FLOW, TRUMAN LIVE MODE</div>
+    <div style="overflow-x:auto;"><pre style="font-family:var(--font-mono); font-size:11px; color:var(--muted); line-height:1.7; white-space:pre; margin:0;">Browser (TRUMAN LIVE toggle, Live System page)
+    |
+    | GET /api/truman/state, POST /api/truman/tick,
+    | GET /api/truman/recovery/{id}, /api/truman/risk/{id}, /api/truman/graph/neighborhood/{id}
+    v
+FastAPI backend (Render)
+    |
+    | get_environment() -- one server-held, thread-locked TrumanEnvironment (api/truman_env.py)
+    v
+A real, seeded SimulationEngine (Simulation/world/engine.py)
+    |
+    | run_one_tick() / attempt_retry() / block_device() -- real engine methods, never re-implemented
+    v
+Rebuilt into financial_system's real graph schema on every tick,
+then queried by the exact same recovery_agent.py / risk_agent.py the frozen-dataset mode calls</pre></div>
   </div>
 </section>
 <section>
@@ -321,6 +407,7 @@ PYTHONPATH=. uvicorn api.main:app --reload</pre></div>
   <h2 class="sec-title">The repository is the source of truth</h2>
   <div class="doclist">
     <div class="docrow"><span class="path">api/main.py</span><span class="desc">This site's backend &mdash; the exact file every Live System click calls.</span></div>
+    <div class="docrow"><span class="path">api/truman_env.py</span><span class="desc">The live, ticking Truman environment TRUMAN LIVE mode calls &mdash; one real SimulationEngine, held in memory.</span></div>
     <div class="docrow"><span class="path">financial_system/recovery/signals.py</span><span class="desc">Recovery's real decline-code taxonomy.</span></div>
     <div class="docrow"><span class="path">financial_system/risk/scoring.py</span><span class="desc">Risk's real weighted formula.</span></div>
     <div class="docrow"><span class="path">financial_system/reconciliation/deterministic.py</span><span class="desc">Controller's real reconciliation arithmetic.</span></div>
