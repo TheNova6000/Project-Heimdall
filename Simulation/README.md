@@ -129,6 +129,11 @@ Read in this order if you're picking this project up for the first time:
    constant's exact provenance, every test's purpose, every honest caveat,
    in the order it actually happened. This is the most detailed document
    here — if a design question isn't answered above, it's answered here.
+8. **`provenance/README.md`** — a structured, queryable catalog
+   (`provenance/catalog.py` + `provenance/report.py`) consolidating every
+   constant's provenance from the scattered code comments and `Research.md`
+   prose above into one place (`docs/NORTH_STAR.md` §34), cross-checked by
+   `tests/test_provenance.py` against the real code and real citations.
 
 ## Connection to Project Heimdall
 
