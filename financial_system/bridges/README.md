@@ -20,6 +20,181 @@ running `Simulation/` world (Working Section 23's item (2)/(3) --
 world to act into, and has no retry mechanism yet). That remains exactly as
 unbuilt as the spec says.
 
+## Domain bridge registry (2026-09-04, later follow-on task)
+
+The three bridges below (Recovery, Risk, Controller) were each built as
+one-off, separately-coded transform logic, with no catalog tracking what
+was bridged, what wasn't, or why. This later task formalizes that into a
+real, documented, extensible **domain registry** --
+`financial_system/bridges/registry.py` -- implementing
+`docs/NORTH_STAR.md` §26 ("Domain Package Architecture") and §28
+("Capability Graph") concretely, at a bounded, honest scale. It wraps and
+catalogs the exact same transform/agent functions described in the rest
+of this file -- it does not reimplement or alter one byte of their logic
+(`simulation_bridge.py` and `run_bridge.py` are byte-for-byte unmodified
+by this task; see "Verification" below).
+
+**What this is: a structured catalog.** Registering a domain means
+constructing one `DomainBridge` dataclass and calling `register_domain()`
+-- a well-defined, discoverable, testable process. `capability_report.py`
+reads the registry and prints it in a "Capability Graph" style.
+
+**What this is NOT: machine learning, autonomy, or self-modifying code.**
+Nothing in `registry.py` scans code, infers a new domain's fields from
+data, or decides on its own that a domain should move from `BLOCKED` to
+`BRIDGED`. A human/agent reads the real, frozen code and calls
+`register_domain()` explicitly, every time. This is stated plainly in
+`registry.py`'s own module docstring, and repeated here so it is never
+mistaken for more than it is.
+
+### The `DomainBridge` structure
+
+```python
+@dataclass(frozen=True)
+class DomainBridge:
+    domain_name: str
+    status: Literal["BRIDGED", "BLOCKED"]
+    heimdall_entry_point: str          # the real callable (BRIDGED) or "does not exist yet" (BLOCKED)
+    required_truman_fields: list[str]  # extracted from real code, never invented
+    transform_fn: Callable | None      # BRIDGED only -- the real transform
+    blocked_reason: str | None         # BLOCKED only -- reused verbatim from this file / Research.md Part C
+    last_verified: str                 # a real commit hash + pointer, never a bare timestamp
+```
+
+A `__post_init__` check refuses to construct a `BRIDGED` entry with no
+`transform_fn`, or a `BLOCKED` entry with no `blocked_reason` -- the
+registry cannot represent a half-stated claim.
+
+### The six real domains
+
+| domain | status | heimdall_entry_point | required_truman_fields (summary) |
+|---|---|---|---|
+| `recovery` | BRIDGED | `recovery.recovery_agent.run_recovery_for_payment()` | `transactions.csv: kind` -> `payments.csv: status`/`failure_reason='insufficient_funds'`; 1:1 order:payment for the sibling-success check |
+| `risk` | BRIDGED | `risk.runner.devices_with_sharers()` + `risk.risk_agent.run_risk_for_device()` | `devices.csv` (real, direct); `transactions.csv: device_id` -> `payments.csv: device_id` |
+| `controller` | BRIDGED | `reconciliation.controller.run_controller_for_settlement()` | `transactions.csv: kind=='settlement'` -> `settlements.csv`/`bank_transactions.csv`; T+1 purchase grouping -> `settlement_payments.csv` |
+| `fraud` | BLOCKED | does not exist yet | `Person.fraud_propensity`, `Transaction.kind` values (`fraud_attempt`, ...), `Transaction.is_fraudulent`, behavioral `Merchant.category` multiplier -- none exist |
+| `credit` | BLOCKED | does not exist yet | `Person.credit_score` (300-850), a `CreditEvent` -- neither exists |
+| `loan` | BLOCKED | does not exist yet | a `Loan` dataclass, a `Bank` loans registry -- neither exists |
+
+Full field lists and exact `blocked_reason` text (reused verbatim from
+this file's own gap sections above and `Simulation/docs/Research.md` Part
+C, not rephrased) are in `registry.py` itself.
+
+### A seventh, demonstration-only entry: `coverage`
+
+To prove the registry is a real extension point and not just a static
+list (see `financial_system/bridges/coverage_check.py`), a fourth,
+genuinely new "domain" is registered through the exact same mechanism,
+from a separate module (`capability_report.py`) that only imports
+`registry.py`'s public API -- proving a caller outside the registry's own
+module can extend it. `coverage` is a basic, count-based reconciliation
+summary (of all bridged successful purchases, what fraction were swept
+into a settlement?) chosen specifically because it needs **zero** new
+Simulation/ or Heimdall work: `payments.csv` and `settlement_payments.csv`
+are already written by the existing transform for Recovery/Controller's
+own use. It is explicitly marked `BRIDGED` with
+`heimdall_entry_point="none"` -- it produces no `AgentVerdict` and is not
+a claim that a fourth real Heimdall decision domain exists; it is a
+registry-mechanism demonstration only.
+
+### How to add domain N+1
+
+1. Read the real, frozen code the new domain would consume (a Heimdall
+   agent's `signals.py`, if it exists) and/or the design doc naming what's
+   missing (e.g. another `Simulation/docs/Research.md` Part C entry).
+2. Write a small, real transform function (or, if genuinely blocked, skip
+   this step) -- pure, reading only already-available input, writing only
+   to a caller-supplied path, same discipline as `simulation_bridge.py`'s
+   own module docstring states.
+3. Construct one `DomainBridge(...)`: `domain_name`, `status`,
+   `heimdall_entry_point` (the real callable, or "does not exist yet"),
+   `required_truman_fields` (extracted from the real transform/design doc,
+   never invented), `transform_fn` xor `blocked_reason`, and a real
+   `last_verified` (a commit hash, optionally with a pointer to the
+   specific run/test that verified it).
+4. Call `register_domain(entry)` -- from any module that imports
+   `financial_system.bridges.registry`, exactly like
+   `capability_report.py` does for `coverage` above.
+5. Run `python -m financial_system.bridges.capability_report <sim_outdir>
+   [bridge_outdir]` and confirm the new entry appears with real output.
+6. Add a test asserting the new entry's presence/status/fields, following
+   `test_registry.py`'s pattern.
+
+### Real capability report output (verbatim, one real run)
+
+```
+=== Heimdall Domain Bridge Registry -- Capability Report ===
+(A structured catalog, not an autonomous or self-learning system --
+ see financial_system/bridges/registry.py's module docstring.)
+
+BRIDGED (4)
+-----------
+recovery  -- BRIDGED
+  Heimdall entry point: financial_system.recovery.recovery_agent.run_recovery_for_payment(graph, payment_id, investigate=False) -- Heimdall's real, unmodified Phase 7 agent
+  Live run summary: 171 failed payments; decision distribution {'RETRY': 171}; proposed_action distribution {'RETRY_LATER': 171}
+
+risk  -- BRIDGED
+  Heimdall entry point: financial_system.risk.runner.devices_with_sharers(graph) to select candidate Devices, then financial_system.risk.risk_agent.run_risk_for_device(graph, device_id, investigate=False) -- Heimdall's real, unmodified Phase 6 agent
+  Live run summary: 41 devices with >=2 owners scored; decision distribution {'RELEASE': 35, 'REVIEW': 6}; decision_score range 0.095..0.550
+
+controller  -- BRIDGED
+  Heimdall entry point: financial_system.reconciliation.controller.run_controller_for_settlement(graph, settlement_id, investigate=False) -- Heimdall's real, unmodified Phase 5 agent, whose core arithmetic lives in reconciliation.deterministic.reconcile_settlement()
+  Live run summary: 1770 settlements; decision distribution {'PASS': 1770}
+
+coverage  -- BRIDGED
+  Heimdall entry point: none -- this is a bridge-side deterministic check, not a Heimdall agent decision. Registered specifically to demonstrate the registry's extension mechanism, not to claim a fourth real Heimdall decision domain exists.
+  Live run summary: 8909 successful payments; 8814 covered by a settlement (98.9%)
+
+BLOCKED (3)
+----------
+fraud  -- BLOCKED (Simulation/ does not model fraud at all, by explicit, repeated design choice; see Research.md Part C.1)
+credit  -- BLOCKED (credit_score needs new PERSISTENT agent state outside Phase 2's ledger-invariant discipline; see Research.md Part C.2)
+loan  -- BLOCKED (Loan needs a new persistent liability-side object Phase 2 never designed for; see Research.md Part C.3)
+```
+
+(Full text, including every `required_truman_fields` line and full
+`blocked_reason` text, is produced by
+`python -m financial_system.bridges.capability_report <sim_outdir>`;
+truncated here for length -- see `test_registry.py` for the
+machine-checked version of these same claims.)
+
+### Verification (registry task, no behavior change)
+
+Before AND after this task's changes, `run_bridge.py` (unmodified) was run
+on the same fresh `Simulation/` run (seed=42, population=300, banks=4,
+merchants=20, days=90). Every one of the three domains' real decision
+distributions was byte-for-byte identical, and the two runs' raw output
+directories diffed empty:
+
+```
+recovery:   171 failed payments, decision distribution {'RETRY': 171}, proposed_action {'RETRY_LATER': 171}
+risk:       41 devices scored, decision distribution {'RELEASE': 35, 'REVIEW': 6}, score range 0.095..0.550
+controller: 1770 settlements, decision distribution {'PASS': 1770}
+```
+
+`financial_system.risk.runner` and `financial_system.recovery.runner`
+(against the real, unmodified dataset) were also re-run and confirmed
+unaffected: Risk precision=100.0% recall=96.3% false-positive-rate=0.0%
+(tp=26 fp=0 tn=373 fn=1); Recovery category accuracy=100.0%, recovery rate
+87/87 (100.0%), false-retry rate 57/144 (39.6%). `git diff --stat
+financial_system/` for this task touches only new files under
+`financial_system/bridges/` (`registry.py`, `coverage_check.py`,
+`capability_report.py`, `test_registry.py`) -- `simulation_bridge.py` and
+`run_bridge.py` are byte-for-byte unmodified.
+
+### New files (this task)
+
+- `financial_system/bridges/registry.py` -- the `DomainBridge`
+  dataclass, `register_domain()`/`get_domain()`, and the six real
+  Recovery/Risk/Controller/fraud/credit/loan entries
+- `financial_system/bridges/coverage_check.py` -- the demonstration
+  transform (`compute_settlement_coverage()`)
+- `financial_system/bridges/capability_report.py` -- registers the
+  `coverage` domain and prints the full capability report; runnable
+  directly (see above)
+- `financial_system/bridges/test_registry.py` -- registry tests (9
+  tests, all passing)
+
 ## Why Recovery, not Risk or Controller (ORIGINAL bridge; Risk added later -- see below)
 
 Three domains were possible; only one was actually buildable against what

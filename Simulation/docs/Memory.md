@@ -1478,3 +1478,18 @@ run_bridge.py` now also calls Heimdall's real, unmodified
 `reconciliation/controller.py` logic. `git diff --stat Simulation/` for
 this task is empty — no file under `Simulation/` was touched.
 
+## Part D — the Heimdall bridge, formalized as a domain registry (2026-09-04)
+
+A later, explicit, user-requested follow-on task turned the three
+one-off Recovery/Risk/Controller bridges above into a real, catalogued
+`DomainBridge` registry (`financial_system/bridges/registry.py`) — a
+bounded, honest instance of `docs/NORTH_STAR.md` §26/§28, not autonomous
+learning (see that file's own module docstring for the explicit
+disclaimer). `Simulation/`'s own side of this task is, again, genuinely
+empty — `git diff --stat Simulation/` is empty — this file's job is only
+to note that Research.md Part C's own field-level designs (fraud/credit/
+loan, C.1-C.3) are now the registry's three real `BLOCKED` entries,
+reusing that section's reasoning verbatim rather than re-deriving it. See
+`financial_system/bridges/README.md`'s new top section for the full
+registry write-up and verbatim capability-report output.
+

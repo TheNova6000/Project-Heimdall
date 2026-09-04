@@ -2239,4 +2239,23 @@ And the Research Engine continuously discovers what the system still does not un
 
 That is the systemic transformation of Heimdall.
 
+---
+
+## Implementation note (2026-09-04): §26/§28 now have a real, bounded instance
+
+`financial_system/bridges/registry.py` is a real, working, INTENTIONALLY
+bounded instance of this file's §26 ("Domain Package Architecture") and
+§28 ("Capability Graph") — a structured catalog of `DomainBridge` entries
+(3 real `BRIDGED` domains: Recovery, Risk, Controller; 3 real `BLOCKED`
+domains: fraud, credit, loan, from `Simulation/docs/Research.md` Part C's
+own designs; plus one demonstration entry proving the catalog is a real
+extension point). It is NOT the autonomous, continuously-expanding
+Research Engine §28 describes — see `registry.py`'s own module docstring
+for the explicit disclaimer. It only ever reports two real states
+(BRIDGED / BLOCKED), not this section's aspirational five (SUPPORTED /
+PARTIAL / UNKNOWN / MISSING / UNVERIFIED), because those are the only two
+states this codebase can currently prove. See
+`financial_system/bridges/README.md`'s "Domain bridge registry" section
+for the full write-up.
+
 **Heimdall stops being a financial application and becomes the substrate on which financial intelligence systems can be built.**
