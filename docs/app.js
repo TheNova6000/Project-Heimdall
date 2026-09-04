@@ -1,15 +1,25 @@
-/* Heimdall Beta -- app shell: nav, settings (API base + BYOK Anthropic key,
-   both stored only in this browser's localStorage), and the fetch wrapper
-   every page uses to reach the real FastAPI backend. Nothing here is
-   precomputed -- every call hits a live endpoint. */
+/* Heimdall Beta -- app shell: nav, settings (API base + BYOK keys for
+   Groq/Gemini/Anthropic, all stored only in this browser's localStorage),
+   and the fetch wrapper every page uses to reach the real FastAPI backend.
+   Nothing here is precomputed -- every call hits a live endpoint. */
 
 const DEFAULT_API_BASE = 'https://heimdall-beta-api.onrender.com';
+
+// Free-tier providers tried first, Anthropic last -- matches Discovery.AI's
+// own "Groq / Gemini / Cerebras fallback chain" pattern.
+const PROVIDER_ORDER = ['groq', 'gemini', 'anthropic'];
+const PROVIDER_LABEL = { groq:'Groq', gemini:'Gemini', anthropic:'Anthropic (Claude)' };
 
 const Settings = {
   get apiBase(){ return localStorage.getItem('hb-api-base') || DEFAULT_API_BASE; },
   set apiBase(v){ localStorage.setItem('hb-api-base', v || DEFAULT_API_BASE); },
-  get anthropicKey(){ return localStorage.getItem('hb-anthropic-key') || ''; },
-  set anthropicKey(v){ if(v) localStorage.setItem('hb-anthropic-key', v); else localStorage.removeItem('hb-anthropic-key'); },
+  _keysRaw(provider){ return localStorage.getItem('hb-keys-' + provider) || ''; },
+  keys(provider){ return this._keysRaw(provider).split(',').map(s=>s.trim()).filter(Boolean); },
+  setKeys(provider, raw){
+    if(raw) localStorage.setItem('hb-keys-' + provider, raw);
+    else localStorage.removeItem('hb-keys-' + provider);
+  },
+  get anyKeySet(){ return PROVIDER_ORDER.some(p => this.keys(p).length > 0); },
 };
 
 async function api(path){
@@ -21,21 +31,37 @@ async function api(path){
   return res.json();
 }
 
-async function askClaude(messages, system, onDelta){
-  const key = Settings.anthropicKey;
-  if(!key) throw Object.assign(new Error('no_key'), { code:'no_key' });
-  const res = await fetch(Settings.apiBase + '/api/ask', {
-    method:'POST',
-    headers:{ 'content-type':'application/json', 'x-api-key':key },
-    body: JSON.stringify({ model:'claude-sonnet-4-5-20250929', max_tokens:1024, system, messages }),
-  });
-  const data = await res.json().catch(()=>null);
-  if(!res.ok){
-    const msg = (data && data.error && data.error.message) || res.statusText;
-    throw Object.assign(new Error(msg), { code:'api_error', status:res.status });
+/* Tries every configured key, in provider order (Groq -> Gemini ->
+   Anthropic), then every comma-separated key within a provider, stopping
+   at the first successful reply. Each attempt is one request to our own
+   /api/ask proxy, which forwards that one key to that one provider and
+   never sees any of the others. */
+async function askLLM(messages, system){
+  const attempts = [];
+  for(const provider of PROVIDER_ORDER){
+    for(const key of Settings.keys(provider)) attempts.push({ provider, key });
   }
-  const text = (data.content || []).map(b => b.text || '').join('');
-  return text;
+  if(!attempts.length) throw Object.assign(new Error('no_key'), { code:'no_key' });
+
+  let lastErr = null;
+  for(const { provider, key } of attempts){
+    try{
+      const res = await fetch(Settings.apiBase + '/api/ask', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', 'x-api-key':key },
+        body: JSON.stringify({ provider, max_tokens:1024, system, messages }),
+      });
+      const data = await res.json().catch(()=>null);
+      if(!res.ok){
+        lastErr = Object.assign(new Error((data && data.detail) || res.statusText), { status:res.status, provider });
+        continue;
+      }
+      return data.text;
+    }catch(e){
+      lastErr = e;
+    }
+  }
+  throw Object.assign(lastErr || new Error('all configured providers failed'), { code:'api_error' });
 }
 
 let backendState = 'pending'; // pending | ok | bad

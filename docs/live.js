@@ -188,7 +188,7 @@ function renderLiveChat(id){
   const msgEl = document.getElementById('live-chat-messages');
   const input = document.getElementById('live-chat-input');
   const send = document.getElementById('live-chat-send');
-  const hasKey = !!Settings.anthropicKey;
+  const hasKey = Settings.anyKeySet;
 
   if(!thread.messages.length){
     msgEl.innerHTML = hasKey
@@ -226,7 +226,7 @@ async function sendLiveChat(text){
   thread.messages.push({ role:'assistant', content:'', pending:true });
   renderLiveChat(id);
   try{
-    const reply = await askClaude(thread.turns);
+    const reply = await askLLM(thread.turns);
     thread.messages[idx] = { role:'assistant', content: reply };
     thread.turns.push({ role:'assistant', content: reply });
   }catch(e){

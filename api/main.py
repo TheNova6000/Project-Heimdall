@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -169,30 +169,85 @@ def controller(settlement_id: str):
 
 
 class AskBody(BaseModel):
-    model: str = "claude-sonnet-4-5-20250929"
+    provider: str = "anthropic"   # "anthropic" | "groq" | "gemini"
+    model: str | None = None
     max_tokens: int = 1024
-    messages: list[dict]
+    messages: list[dict]          # [{role: "user"|"assistant", content: str}, ...]
     system: str | None = None
+
+
+PROVIDER_DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-4-5-20250929",
+    "groq": "llama-3.3-70b-versatile",
+    "gemini": "gemini-2.0-flash",
+}
+
+
+async def _ask_anthropic(api_key: str, model: str, body: AskBody) -> str:
+    payload = {"model": model, "max_tokens": body.max_tokens, "messages": body.messages}
+    if body.system:
+        payload["system"] = body.system
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json=payload,
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text[:500])
+    data = resp.json()
+    return "".join(b.get("text", "") for b in data.get("content", []))
+
+
+async def _ask_groq(api_key: str, model: str, body: AskBody) -> str:
+    # Groq's chat-completions endpoint is OpenAI-compatible.
+    msgs = ([{"role": "system", "content": body.system}] if body.system else []) + body.messages
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+            json={"model": model, "max_tokens": body.max_tokens, "messages": msgs},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text[:500])
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
+async def _ask_gemini(api_key: str, model: str, body: AskBody) -> str:
+    contents = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["content"]}]}
+                for m in body.messages]
+    payload = {"contents": contents}
+    if body.system:
+        payload["systemInstruction"] = {"parts": [{"text": body.system}]}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(url, params={"key": api_key}, headers={"content-type": "application/json"}, json=payload)
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text[:500])
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+_PROVIDER_FN = {"anthropic": _ask_anthropic, "groq": _ask_groq, "gemini": _ask_gemini}
 
 
 @app.post("/api/ask")
 async def ask(body: AskBody, request: Request):
-    """Stateless proxy to Anthropic's Messages API. The caller's own API key
-    travels in the x-api-key header of THIS request and is forwarded
-    as-is to Anthropic -- never written to disk, a database, or a log
-    line here."""
+    """Stateless proxy: one endpoint, three upstream LLM providers
+    (Anthropic / Groq / Gemini), response always normalized to {"text": ...}
+    so the frontend never has to know each provider's own reply shape. The
+    caller's own API key travels in the x-api-key header of THIS request and
+    is forwarded as-is to the chosen provider -- never written to disk, a
+    database, or a log line here. Multi-key fallback (comma-separated keys)
+    is the frontend's job, one request per key attempt -- this endpoint only
+    ever sees one key per call."""
     api_key = request.headers.get("x-api-key")
     if not api_key:
-        raise HTTPException(400, "Missing x-api-key header -- add your Anthropic API key in Settings")
-    payload = body.model_dump(exclude_none=True)
-    async with httpx.AsyncClient(timeout=90) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=payload,
-        )
-    return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+        raise HTTPException(400, "Missing x-api-key header -- add an API key in Settings")
+    fn = _PROVIDER_FN.get(body.provider)
+    if not fn:
+        raise HTTPException(400, f"unknown provider {body.provider!r} -- use anthropic, groq, or gemini")
+    model = body.model or PROVIDER_DEFAULT_MODEL[body.provider]
+    text = await fn(api_key, model, body)
+    return {"text": text}

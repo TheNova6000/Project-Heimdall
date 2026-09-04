@@ -335,18 +335,34 @@ function settingsHTML(){ return `
 <section class="hero" style="padding-top:48px; padding-bottom:20px;">
   <div class="section-label">SETTINGS<span class="line"></span></div>
   <h2 class="sec-title">Your keys, your browser, nothing sent to us</h2>
-  <p class="sec-sub" style="max-width:70ch;">Both fields below are saved only in this browser's <code>localStorage</code>. The Anthropic key is sent, per request, straight through our backend to <code>api.anthropic.com</code> and never written to disk or logged &mdash; the backend is a stateless proxy, not a key store.</p>
+  <p class="sec-sub" style="max-width:70ch;">Every field below is saved only in this browser's <code>localStorage</code>. A key is sent, per request, straight through our backend to that one provider and never written to disk or logged &mdash; the backend is a stateless proxy, not a key store. The chat tries Groq first, then Gemini, then Anthropic, using the first configured key that answers &mdash; add just one, or all three.</p>
 </section>
 <section>
   <div class="panel" style="margin-bottom:24px;"><div class="corner tl"></div><div class="corner br"></div>
     <div class="settings-form">
       <div>
-        <label for="set-anthropic">Anthropic API key (for the Live System chat)</label>
-        <input type="password" id="set-anthropic" placeholder="sk-ant-..." autocomplete="off">
+        <label for="set-key-groq">Groq API key(s) &mdash; tried first, free tier</label>
+        <input type="password" id="set-key-groq" placeholder="gsk_..., gsk_... (comma-separated for multiple)" autocomplete="off">
+        <div class="settings-row" style="margin-top:6px;">
+          <span id="badge-groq" class="badge badge-off">not set</span>
+          <span style="font-size:11px; color:var(--muted-2);">Get one at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a></span>
+        </div>
       </div>
-      <div class="settings-row">
-        <span id="set-anthropic-badge" class="badge badge-off">not set</span>
-        <span style="font-size:11px; color:var(--muted-2);">Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a></span>
+      <div>
+        <label for="set-key-gemini">Gemini API key(s) &mdash; tried second, free tier</label>
+        <input type="password" id="set-key-gemini" placeholder="AIza..., AIza... (comma-separated for multiple)" autocomplete="off">
+        <div class="settings-row" style="margin-top:6px;">
+          <span id="badge-gemini" class="badge badge-off">not set</span>
+          <span style="font-size:11px; color:var(--muted-2);">Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a></span>
+        </div>
+      </div>
+      <div>
+        <label for="set-key-anthropic">Anthropic API key(s) &mdash; tried last, paid</label>
+        <input type="password" id="set-key-anthropic" placeholder="sk-ant-..., sk-ant-... (comma-separated for multiple)" autocomplete="off">
+        <div class="settings-row" style="margin-top:6px;">
+          <span id="badge-anthropic" class="badge badge-off">not set</span>
+          <span style="font-size:11px; color:var(--muted-2);">Get one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a></span>
+        </div>
       </div>
       <div>
         <label for="set-api-base">Backend URL (only change this if the default is down)</label>
@@ -359,39 +375,47 @@ function settingsHTML(){ return `
       </div>
       <div class="hero-cta">
         <button class="btn btn-primary" id="set-save">SAVE</button>
-        <button class="btn btn-ghost" id="set-clear">CLEAR KEY</button>
+        <button class="btn btn-ghost" id="set-clear">CLEAR ALL KEYS</button>
       </div>
     </div>
   </div>
   <div class="panel"><div class="corner tl"></div><div class="corner br"></div>
     <div class="loop-title" style="margin-bottom:8px;">// WHY BYOK, NOT A SHARED KEY</div>
-    <p style="font-size:12px; color:var(--muted); line-height:1.7;">This is a static GitHub Pages site with a free-tier backend &mdash; there's no account system and no budget for a shared LLM key every visitor could drain. Bringing your own key means the chat is genuinely yours: your usage, your rate limits, your bill. The backend never sees your key outside the single request it's forwarding.</p>
+    <p style="font-size:12px; color:var(--muted); line-height:1.7;">This is a static GitHub Pages site with a free-tier backend &mdash; there's no account system and no budget for a shared LLM key every visitor could drain. Bringing your own key means the chat is genuinely yours: your usage, your rate limits, your bill. Multiple comma-separated keys for one provider let the chat fall through to the next key if one hits a rate limit, without you having to notice or intervene.</p>
   </div>
 </section>`; }
+
+const SETTINGS_PROVIDERS = ['groq', 'gemini', 'anthropic'];
 
 function wireSettingsForm(){
   document.getElementById('set-recheck').addEventListener('click', pingBackend);
   document.getElementById('set-save').addEventListener('click', () => {
     Settings.apiBase = document.getElementById('set-api-base').value.trim();
-    Settings.anthropicKey = document.getElementById('set-anthropic').value.trim();
+    for(const p of SETTINGS_PROVIDERS){
+      Settings.setKeys(p, document.getElementById('set-key-' + p).value.trim());
+    }
     renderSettingsPage();
     pingBackend();
   });
   document.getElementById('set-clear').addEventListener('click', () => {
-    Settings.anthropicKey = '';
+    for(const p of SETTINGS_PROVIDERS) Settings.setKeys(p, '');
     renderSettingsPage();
   });
 }
 
 function renderSettingsPage(){
   const base = document.getElementById('set-api-base');
-  const key = document.getElementById('set-anthropic');
-  const badge = document.getElementById('set-anthropic-badge');
   if(base) base.value = Settings.apiBase === DEFAULT_API_BASE ? '' : Settings.apiBase;
-  if(key) key.value = Settings.anthropicKey;
-  if(badge){
-    if(Settings.anthropicKey){ badge.textContent = 'key set'; badge.className = 'badge badge-ok'; }
-    else{ badge.textContent = 'not set'; badge.className = 'badge badge-off'; }
+  for(const p of SETTINGS_PROVIDERS){
+    const input = document.getElementById('set-key-' + p);
+    const badge = document.getElementById('badge-' + p);
+    const n = Settings.keys(p).length;
+    if(input) input.value = Settings._keysRaw(p);
+    if(badge){
+      if(n === 1){ badge.textContent = 'key set'; badge.className = 'badge badge-ok'; }
+      else if(n > 1){ badge.textContent = n + ' keys set'; badge.className = 'badge badge-ok'; }
+      else{ badge.textContent = 'not set'; badge.className = 'badge badge-off'; }
+    }
   }
 }
 
