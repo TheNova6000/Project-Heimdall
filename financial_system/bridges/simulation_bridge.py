@@ -17,39 +17,65 @@ This module is a pure, additive transform:
   - it writes only to a caller-supplied output directory, never to
     `financial_system/data/`.
 
-WHY RECOVERY, NOT RISK OR CONTROLLER (see bridges/README.md for the full
-reasoning): Risk's only nonzero signal (risk/runner.py's
-`devices_with_sharers`) requires >=2 customers sharing one Device node --
-i.e. real device-fingerprint/fraud-ring modeling. `Simulation/` has no
-Device, PaymentInstrument, or fraud concept at all (persons.csv has none of
-these columns). Recovery's decision logic (`recovery/signals.py`) reads
-exactly three things from the graph: a Payment's `status`, its
-`failure_reason`, and whether a sibling Payment on the same Order already
-succeeded -- all three are things `Simulation/`'s `transactions.csv` either
-IS (status, via `kind`) or trivially entails (failure_reason, via the one
-mechanically-verified cause `Simulation/` actually models: `balance_before
-< amount` -> `insufficient_funds`; no-siblings, via the 1-payment-per-order
-convention this bridge adopts, matching Heimdall's own real dataset, which
-is also 1:1 order:payment 1000/1000 times).
+WHY RECOVERY WAS BUILT FIRST (see bridges/README.md for the full history):
+at the time this bridge was first built, `Simulation/` had no Device,
+PaymentInstrument, or fraud concept at all, so Risk's only nonzero signal
+(risk/runner.py's `devices_with_sharers`, which needs >=2 customers
+sharing one real Device node) was structurally unreachable -- Recovery was
+the only domain where a real transform of real signal was possible.
+Recovery's decision logic (`recovery/signals.py`) reads exactly three
+things from the graph: a Payment's `status`, its `failure_reason`, and
+whether a sibling Payment on the same Order already succeeded -- all three
+are things `Simulation/`'s `transactions.csv` either IS (status, via
+`kind`) or trivially entails (failure_reason, via the one mechanically-
+verified cause `Simulation/` actually models: `balance_before < amount` ->
+`insufficient_funds`; no-siblings, via the 1-payment-per-order convention
+this bridge adopts, matching Heimdall's own real dataset, which is also
+1:1 order:payment 1000/1000 times). Recovery is unchanged by this later
+Device addition and remains fully supported below.
 
-WHAT THIS BRIDGE FABRICATES, AND WHY (the one genuine gap): Heimdall's
-`payment_ingestion.py` requires `device_id` and `instrument_id` to be valid
-foreign keys into `devices` / `payment_instruments` -- fields Recovery's own
-decision logic (`recovery/signals.py`) never reads, but that ingestion
-requires structurally regardless of domain. Since `Simulation/` has no
-device/instrument concept, this bridge synthesizes exactly one placeholder
-Device and one placeholder PaymentInstrument per simulated Person, derived
-deterministically from `person_id`, carrying no signal whatsoever (fixed
-fingerprint/type/masked_identifier strings). This is a structural filler
-for referential integrity only -- flagged here, in the field-mapping table
-in README.md, and again in the run report, so it is never mistaken for
-simulated device data. A direct consequence: Risk's shared-device signal
-can never fire on bridged data (every device has exactly one owner), which
-is exactly why Risk was not the domain chosen.
+DEVICE DATA IS NOW REAL (later addition, see docs/Memory.md's "Device"
+section in Simulation/ and the README's updated field-mapping table):
+`Simulation/` grew a real `Device` entity (`world/models.py`) with exactly
+one legitimate sharing mechanism -- some household members share their
+household's "primary" device (`DEVICE_HOUSEHOLD_SHARING_FRACTION`,
+Simulation/world/engine.py). This bridge now reads `devices.csv` (written
+by `run_simulation.py`) and each transaction's own `device_id` column
+directly, instead of fabricating one placeholder device per person. This
+makes Risk's shared-device signal (`risk/runner.py`'s
+`devices_with_sharers()`) structurally REAL on bridged data for the first
+time -- a Device node can genuinely have >=2 distinct Customers, because
+Simulation's own household-sharing mechanism can genuinely produce that.
+No fraud-ring signal is fabricated anywhere in this transform: Simulation
+does not model fraud (by explicit design, see Simulation/docs/Research.md
+Part C.1), so any household-shared device this bridge produces is honest
+benign-sharing structure, not a synthesized fraud pattern. Whether Risk's
+real, unmodified scoring logic flags anything on this data is an honest,
+reportable result either way -- see bridges/README.md's "Risk" section and
+run_bridge.py for the real run.
+
+WHAT THIS BRIDGE STILL FABRICATES, AND WHY (the one remaining genuine
+gap): `payment_instruments.csv` (Heimdall's separate payment-instrument
+concept -- card/UPI/wallet, independently of device) has no Simulation
+equivalent at all -- `Simulation/` still does not model a payment
+instrument as distinct from a device. This bridge synthesizes exactly one
+PaymentInstrument per (Person, their real Device) pair -- a thin 1:1
+wrapper AROUND the now-real device, deterministically named from the real
+`device_id` (not from `person_id` alone, as before), so it is directly
+traceable to the real device it stands in for, but its `type`/
+`masked_identifier` fields remain fixed placeholder strings carrying no
+signal. Recovery's decision logic (`recovery/signals.py`) never reads
+`instrument_id`'s content (confirmed by reading it), so this fabrication
+cannot distort a Recovery result; Risk's logic (`risk/signals.py`) never
+reads PaymentInstrument at all (it keys entirely off Device), so it
+cannot distort a Risk result either. Flagged here, in the field-mapping
+table in README.md, and again in the run report, so it is never mistaken
+for simulated instrument data.
 """
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -98,12 +124,14 @@ class BridgeTransformReport:
     persons_read: int = 0
     merchants_read: int = 0
     transactions_read: int = 0
+    devices_read: int = 0
     payments_written: int = 0
     orders_written: int = 0
     customers_written: int = 0
     merchants_written: int = 0
     devices_written: int = 0
     instruments_written: int = 0
+    shared_devices: int = 0  # real Devices with >=2 distinct owner_person_ids
     skipped_transaction_kinds: dict = field(default_factory=dict)  # kind -> count, e.g. salary/settlement/sweep
     fabricated_fields: list = field(default_factory=list)
 
@@ -132,9 +160,14 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
     persons = _read_csv(sim_outdir / "persons.csv")
     merchants = _read_csv(sim_outdir / "merchants.csv")
     transactions = _read_csv(sim_outdir / "transactions.csv")
+    # devices.csv is the real Device data this bridge now uses (see this
+    # module's docstring, "DEVICE DATA IS NOW REAL") -- written by
+    # Simulation/run_simulation.py alongside every other output file.
+    sim_devices = _read_csv(sim_outdir / "devices.csv")
 
     report = BridgeTransformReport(
         persons_read=len(persons), merchants_read=len(merchants), transactions_read=len(transactions),
+        devices_read=len(sim_devices),
     )
 
     # Simulation/ has no entity "created_at" for Person/Merchant -- the
@@ -143,20 +176,20 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
     # reference entity below (documented fabrication, not simulated data).
     earliest_ts = min((t["timestamp"] for t in transactions), default="1970-01-01T00:00:00+00:00")
     report.fabricated_fields.append(
-        f"customers.created_at, merchants.created_at, devices.first_seen_at := earliest transaction "
-        f"timestamp in the run ({earliest_ts}) -- Simulation/'s persons.csv/merchants.csv carry no "
-        f"creation-date field at all"
+        f"customers.created_at, merchants.created_at := earliest transaction timestamp in the run "
+        f"({earliest_ts}) -- Simulation/'s persons.csv/merchants.csv carry no creation-date field at all"
     )
     report.fabricated_fields.append(
         "customers.email := '<person_id>@simulation.bridge.local' -- Simulation/ has no email field"
     )
     report.fabricated_fields.append(
-        "devices, payment_instruments (one placeholder each per Person, keyed off person_id) -- "
-        "Simulation/ has no device or payment-instrument concept whatsoever; these exist purely to "
-        "satisfy Heimdall's payment_ingestion.py foreign-key requirement and carry zero signal. "
-        "recovery/signals.py never reads either field, confirmed by reading it, so this fabrication "
-        "cannot influence a Recovery decision -- it would, however, make Risk's shared-device signal "
-        "vacuous on this data (every device has exactly one owner), which is why Risk was not chosen."
+        "payment_instruments (one row per (Person, their real Device) pair, instrument_id derived from "
+        "the real device_id -- see this module's docstring) -- Simulation/ has no payment-instrument "
+        "concept distinct from a device at all; this exists purely to satisfy Heimdall's "
+        "payment_ingestion.py foreign-key requirement and carries zero signal of its own. "
+        "recovery/signals.py never reads instrument_id's content, confirmed by reading it, and "
+        "risk/signals.py never reads PaymentInstrument at all (keys entirely off Device), so this "
+        "fabrication cannot influence either a Recovery or a Risk decision."
     )
     report.fabricated_fields.append(
         f"payments.currency / orders.currency := {CURRENCY!r} (fixed) -- Simulation/ has no currency "
@@ -164,24 +197,66 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
         f"Heimdall's own default rather than inventing a new convention"
     )
 
-    # -- customers.csv (Person -> Customer), devices.csv, payment_instruments.csv --
-    customer_rows, device_rows, instrument_rows = [], [], []
-    for p in persons:
-        pid = p["person_id"]
-        customer_rows.append({
-            "customer_id": pid, "name": p.get("name", ""),
-            "email": f"{pid}@simulation.bridge.local", "created_at": earliest_ts,
-        })
-        device_rows.append({
-            "device_id": f"dev_bridge_{pid}", "fingerprint": "bridge-placeholder-no-device-signal",
-            "first_seen_at": earliest_ts,
-        })
-        instrument_rows.append({
-            "instrument_id": f"instr_bridge_{pid}", "type": "bridge-placeholder",
-            "masked_identifier": "N/A", "customer_id": pid,
-        })
+    # -- customers.csv (Person -> Customer) --
+    customer_rows = [
+        {
+            "customer_id": p["person_id"], "name": p.get("name", ""),
+            "email": f"{p['person_id']}@simulation.bridge.local", "created_at": earliest_ts,
+        }
+        for p in persons
+    ]
     _write_csv(bridge_raw_dir / "customers.csv", _HEIMDALL_HEADERS["customers.csv"], customer_rows)
+
+    # -- devices.csv: REAL Device data, direct from Simulation/'s own
+    # devices.csv (see this module's docstring, "DEVICE DATA IS NOW REAL").
+    # first_seen_at is still a fabrication (Device has no creation-date
+    # field of its own in Simulation/), but now computed per-device from
+    # that device's own earliest observed purchase/payment_failure
+    # transaction where one exists, falling back to the run's overall
+    # earliest_ts only for a device that never appears in a transaction at
+    # all (a person who never attempted a purchase) -- more precise than
+    # the previous single-fabricated-timestamp-for-everyone placeholder,
+    # though still a fabrication, stated plainly.
+    device_first_seen: dict[str, str] = {}
+    for t in transactions:
+        did = t.get("device_id", "")
+        if not did:
+            continue
+        if did not in device_first_seen or t["timestamp"] < device_first_seen[did]:
+            device_first_seen[did] = t["timestamp"]
+
+    device_rows = []
+    person_device: dict[str, str] = {}  # person_id -> device_id, from Simulation/'s real linkage
+    shared_devices = 0
+    for d in sim_devices:
+        device_id = d["device_id"]
+        owner_person_ids = json.loads(d["owner_person_ids"])
+        if len(owner_person_ids) >= 2:
+            shared_devices += 1
+        for pid in owner_person_ids:
+            person_device[pid] = device_id
+        device_rows.append({
+            "device_id": device_id,
+            "fingerprint": d["fingerprint"],
+            "first_seen_at": device_first_seen.get(device_id, earliest_ts),
+        })
+    report.shared_devices = shared_devices
     _write_csv(bridge_raw_dir / "devices.csv", _HEIMDALL_HEADERS["devices.csv"], device_rows)
+
+    # -- payment_instruments.csv: still fabricated (see docstring), but now
+    # a thin 1:1 wrapper keyed off each person's REAL device_id, one row
+    # per Person (Heimdall's schema ties one instrument to exactly one
+    # customer_id, so a shared device still needs one instrument row per
+    # sharer -- this does not fabricate any instrument-sharing that
+    # Simulation/ doesn't itself model).
+    instrument_rows = [
+        {
+            "instrument_id": f"instr_{person_device[p['person_id']]}_{p['person_id']}",
+            "type": "bridge-placeholder", "masked_identifier": f"device:{person_device[p['person_id']]}",
+            "customer_id": p["person_id"],
+        }
+        for p in persons
+    ]
     _write_csv(bridge_raw_dir / "payment_instruments.csv", _HEIMDALL_HEADERS["payment_instruments.csv"],
                instrument_rows)
     report.customers_written = len(customer_rows)
@@ -228,13 +303,24 @@ def transform_simulation_output(sim_outdir: Path, bridge_raw_dir: Path) -> Bridg
         ts = t["timestamp"]
         is_failed = kind == "payment_failure"
 
+        # device_id: taken directly from Simulation/'s own transaction row
+        # (the real device this payer actually transacted from -- see
+        # Simulation/world/models.py's Transaction docstring). Falls back
+        # to this payer's assigned device (person_device, from devices.csv)
+        # only if the transaction's own device_id is somehow blank -- not
+        # expected to happen for a purchase/payment_failure row (Simulation/
+        # always sets it for these two kinds), kept as a defensive guard
+        # rather than crashing the bridge on an unexpected upstream change.
+        device_id = t.get("device_id") or person_device.get(from_id, "")
+        instrument_id = f"instr_{device_id}_{from_id}" if device_id else ""
+
         order_rows.append({
             "order_id": order_id, "merchant_id": to_id, "customer_id": from_id,
             "amount": amount, "currency": CURRENCY, "created_at": ts,
         })
         payment_rows.append({
             "payment_id": payment_id, "order_id": order_id, "customer_id": from_id, "merchant_id": to_id,
-            "device_id": f"dev_bridge_{from_id}", "instrument_id": f"instr_bridge_{from_id}",
+            "device_id": device_id, "instrument_id": instrument_id,
             "amount": amount, "currency": CURRENCY,
             "status": "failed" if is_failed else "success",
             "failure_reason": SIMULATION_FAILURE_REASON if is_failed else "",

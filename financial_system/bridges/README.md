@@ -18,20 +18,24 @@ running `Simulation/` world (Working Section 23's item (2)/(3) --
 world to act into, and has no retry mechanism yet). That remains exactly as
 unbuilt as the spec says.
 
-## Why Recovery, not Risk or Controller
+## Why Recovery, not Risk or Controller (ORIGINAL bridge; Risk added later -- see below)
 
 Three domains were possible; only one was actually buildable against what
-`Simulation/` produces:
+`Simulation/` produced AT THE TIME this bridge was first built:
 
 - **Risk** (`financial_system/risk/`) needs shared-device fraud-ring
   structure: `risk/runner.py`'s `devices_with_sharers()` only ever produces
   a nonzero score for a Device node with >=2 distinct Customers. `Simulation/`
-  has no Device, PaymentInstrument, or fraud concept at all --
-  `Simulation/output/*/persons.csv` has no such columns, and nothing in
-  `Simulation/world/` models shared devices. A bridge could only ever
+  had no Device, PaymentInstrument, or fraud concept at all --
+  `Simulation/output/*/persons.csv` had no such columns, and nothing in
+  `Simulation/world/` modeled shared devices. A bridge could only ever
   produce one placeholder Device per Person (see "Fabricated fields"
-  below), which makes Risk's whole signal structurally vacuous -- not a
-  real test of Risk, just zeros.
+  below), which made Risk's whole signal structurally vacuous -- not a
+  real test of Risk, just zeros. **This has since changed** -- see
+  "Part 2: Risk, now that Device is real" below, a later, explicit,
+  user-requested follow-on task that gave `Simulation/` a real `Device`
+  entity and extended this bridge to use it. Controller remains unbuilt,
+  for the reason below.
 - **Controller** (settlement reconciliation) needs Settlement and
   BankTransaction records with fee/tax breakdowns matched against bank
   deposits. `Simulation/` has a `settlement` transaction kind (merchant ->
@@ -39,6 +43,7 @@ Three domains were possible; only one was actually buildable against what
   Razorpay-shaped per-payment settlement batching with fees -- mapping it
   onto Controller's schema would mean inventing a settlement-batching
   policy Simulation never actually decided, not transforming real signal.
+  Still unbuilt; still out of scope.
 - **Recovery** (`financial_system/recovery/`) needs exactly three things
   per failed Payment (confirmed by reading `recovery/signals.py` directly,
   not guessed): `status`, `failure_reason`, and whether a sibling Payment on
@@ -51,8 +56,45 @@ Three domains were possible; only one was actually buildable against what
   `Simulation/`'s "single most defensible" supervised-learning label, for
   the same reason).
 
-Recovery was the only domain where the bridge is a real transform of real
-signal, not a structural formality producing meaningless output.
+Recovery was the only domain where the bridge was a real transform of real
+signal, not a structural formality producing meaningless output, at the
+time it was first built. It is unchanged by the later Risk work below.
+
+## Part 2: Risk, now that Device is real (later, user-requested follow-on)
+
+`Simulation/` grew a real `Device` entity (`Simulation/world/models.py`,
+`Simulation/world/engine.py` -- see `Simulation/docs/Memory.md`'s "Device"
+section for the full design). Every Person now maps to exactly one real
+Device; the one legitimate sharing mechanism modeled is a household's
+members optionally sharing the household's "primary" device
+(`DEVICE_HOUSEHOLD_SHARING_FRACTION = 0.3`, a named MODELING ASSUMPTION --
+see `Simulation/docs/Memory.md` for its full provenance/justification). No
+fraud-ring mechanism was added anywhere -- `Simulation/` still does not
+model fraud, by explicit, repeated design choice (`Simulation/docs/
+Research.md` Part C.1).
+
+This bridge (`simulation_bridge.py`) now reads `Simulation/`'s real
+`devices.csv` and each transaction's own real `device_id` column directly,
+instead of fabricating one placeholder Device per Person. `run_bridge.py`
+now also calls Heimdall's real, unmodified `risk/runner.py` /
+`risk/risk_agent.py` logic (`devices_with_sharers()` +
+`run_risk_for_device()`) on every bridged Device with >=2 distinct owning
+Customers -- exactly Risk's own real definition of "has any signal to
+score at all."
+
+**The honest result** (see "Real end-to-end run" below for verbatim
+numbers): Risk's real scoring logic runs meaningfully on bridged data for
+the first time -- it finds real Devices shared by >=2 real Customers,
+computes real burst/account-age signals over their real payment history,
+and produces real MEDIUM-tier ("REVIEW") verdicts for some of them. It
+produces **zero HIGH-tier ("HOLD") verdicts** -- because `Simulation/`
+genuinely does not simulate the burst-of-payments-from-a-newly-created-
+account pattern that drives a HIGH score (`risk/signals.py`'s
+`max_burst_count`/`min_account_age_days` signals), only honest, steady-
+state household device sharing. This is the CORRECT and expected result
+given honest input, per this task's own framing -- not a gap to fix. Risk's
+decision/scoring logic itself was not touched, examined for tuning, or
+adjusted in any way to produce a more "interesting" result.
 
 ## Field mapping (Simulation -> Heimdall raw CSV)
 
@@ -72,8 +114,9 @@ documents the same shape). Heimdall raw-CSV columns are read from
 | `merchants.csv: name` | -> | `merchants.csv: name` | direct |
 | `merchants.csv: category` | -> | `merchants.csv: category` | direct |
 | *(none)* | -> | `merchants.csv: created_at` | **fabricated**: same earliest-timestamp placeholder |
-| *(none)* | -> | `devices.csv` (1 row per Person) | **fabricated, zero signal**: `dev_bridge_<person_id>`, fixed placeholder fingerprint. Simulation has no device concept. `recovery/signals.py` never reads this field -- confirmed by reading it -- so it cannot affect a Recovery decision. It DOES make Risk's device-sharing signal structurally vacuous, which is why Risk was not chosen (see above). |
-| *(none)* | -> | `payment_instruments.csv` (1 row per Person) | **fabricated, zero signal**: `instr_bridge_<person_id>`, fixed placeholder type/masked_identifier. Same reasoning as devices. |
+| `devices.csv: device_id`, `fingerprint` | -> | `devices.csv: device_id`, `fingerprint` | **REAL, direct** (later addition -- see "Part 2" above): one row per real Simulation `Device`, including genuine multi-owner (household-shared) devices. `devices.csv: first_seen_at` is still fabricated (earliest observed transaction on that device, or the run's overall earliest timestamp if the device never appears in one) -- Simulation's `Device` has no creation-date field of its own. |
+| `transactions.csv: device_id` (kind in `{purchase, payment_failure}`) | -> | `payments.csv: device_id` | **REAL, direct** (later addition): the payer's own real device, or their household's shared device if that's who transacted -- exactly what Simulation recorded. |
+| *(none)* | -> | `payment_instruments.csv` (1 row per Person, keyed off the person's real `device_id`) | **fabricated, zero signal** (unchanged fabrication, updated shape): `instr_<device_id>_<person_id>`, fixed placeholder type/masked_identifier. Simulation still has no payment-instrument concept distinct from a device. Neither `recovery/signals.py` nor `risk/signals.py` reads this field's content (confirmed by reading both), so it cannot distort either decision. |
 | `transactions.csv: transaction_id` (kind in `{purchase, payment_failure}`) | -> | `orders.csv: order_id`, `payments.csv: payment_id` | `ord_bridge_<txn_id>` / `pay_bridge_<txn_id>`, one Order per Payment (1:1), matching the real Heimdall dataset's own convention -- verified independently: 1000/1000 real payments have `order.amount == payment.amount` and a unique order |
 | `transactions.csv: from_id` | -> | `orders.csv: customer_id`, `payments.csv: customer_id` | direct (a purchase's `from_id` is always a `person_id`) |
 | `transactions.csv: to_id` | -> | `orders.csv: merchant_id`, `payments.csv: merchant_id` | direct (a purchase's `to_id` is always a `merchant_id`) |
@@ -88,18 +131,19 @@ documents the same shape). Heimdall raw-CSV columns are read from
 
 ## What genuinely does not map (the honest gaps)
 
-1. **Device/instrument identity is entirely fabricated.** Simulation has no
-   device or payment-instrument model. This bridge invents exactly one
-   placeholder of each per Person, purely to satisfy
-   `payment_ingestion.py`'s foreign-key requirement. Recovery's decision
-   logic never reads either field (verified by reading
-   `recovery/signals.py`), so this cannot distort a Recovery result -- but
-   it means **Risk cannot be meaningfully bridged this way**: every device
-   has exactly one owner, so `risk/runner.py`'s shared-device signal is
-   always zero on this data. Building a real Risk bridge would require
-   `Simulation/` to grow an actual device/fraud model first -- out of this
-   bridge's scope, and out of `Simulation/`'s current scope per its own
-   `Rules.md`/`Phases.md`.
+1. **~~Device/instrument identity is entirely fabricated~~ -- RESOLVED for
+   Device, still true for PaymentInstrument.** (Original gap, now
+   partially closed by the later Device follow-on task -- kept here,
+   struck through, rather than silently deleted, so the history is
+   honest.) Device identity is now real: `Simulation/` grew a real
+   `Device` entity with a real, tested household-sharing mechanism (see
+   "Part 2" above), and this bridge now reads it directly instead of
+   fabricating a placeholder. `PaymentInstrument` is still entirely
+   fabricated -- `Simulation/` still has no payment-instrument concept
+   distinct from a device -- but neither Recovery's nor Risk's decision
+   logic reads its content (confirmed by reading both `recovery/
+   signals.py` and `risk/signals.py`), so this remaining fabrication
+   cannot distort either domain's result.
 2. **Only one of Heimdall's seven failure categories is ever exercised.**
    `FAILURE_TAXONOMY` in `recovery/signals.py` has seven categories
    (`technical_failure`, `timeout`, `insufficient_funds`,
@@ -117,86 +161,108 @@ documents the same shape). Heimdall raw-CSV columns are read from
    (both are 1:1 order:payment corpora) -- this is not a bridge limitation,
    it is the same "built but unexercised" situation `recovery/runner.py`'s
    own comment already documents for the real dataset.
-4. **A real, reproducible bug found in existing (frozen, unmodified) code
-   while building this bridge**: `financial_state/builder.py`'s
-   `build_financial_state(db_path, raw_dir)` correctly *ingests* from the
-   given `raw_dir` (its ingestion calls thread `raw_dir` through
-   correctly -- confirmed: this bridge's own Payment/Order/Customer counts
-   in the built store exactly match this bridge's own generated CSVs). Its
-   internal **invariant self-check**, however
-   (`_raw_row_count`/`_raw_money_checksum`, builder.py lines ~63-74), reads
-   from the module-level `RAW_DIR` constant
-   (`financial_system/data/raw/`) instead of the `raw_dir` parameter that
-   was actually passed in. Run against this bridge's data, that self-check
-   reports spurious `row_count_failures`/`checksum_failures` (e.g.
-   "payments.csv: read 9043 rows but CSV has 1000") -- it is comparing this
-   bridge's row/checksum counts against the *original, real* dataset's raw
-   files, not against the `raw_dir` that was actually ingested. Verified
-   independently below: summing `bridge_output/raw/payments.csv`'s `amount`
-   column by hand gives `2832406.36`, exactly matching the store's
-   "stored sum" -- proving ingestion itself is correct and the failure is in
-   the self-check's hardcoded path, not in this bridge or in Phase 1's real
-   ingestion logic. **Not fixed** -- `financial_state/builder.py` is an
-   existing, frozen file this task must not touch. Reported here because
-   the task's own instructions require reporting a real gap precisely
-   rather than papering over it, and because a reviewer re-running
-   `run_bridge.py` will see this exact `Phase 1 passed=False` output and
-   should know why.
+4. **~~A real, reproducible bug found in existing (frozen, unmodified)
+   code~~ -- FIXED in a separate, later session** (kept here, historical,
+   rather than deleted, for an honest record). `financial_state/
+   builder.py`'s invariant self-check (`_raw_row_count`/
+   `_raw_money_checksum`) previously read from the module-level `RAW_DIR`
+   constant instead of the `raw_dir` parameter actually passed in,
+   producing spurious `row_count_failures`/`checksum_failures` on any
+   non-default `raw_dir` (including this bridge's). That bug was found,
+   confirmed precisely, fixed, and verified against `financial_system`'s
+   frozen Risk (100.0%/96.3%/0.0%) and Recovery (87/87, 39.6%) baselines
+   in a separate session (commit `b939387`, "Fix Phase 1 invariant
+   self-check to use the actual raw_dir it was called with") -- not part
+   of this Device/Risk-bridge task, and not re-touched here. Its practical
+   effect on this bridge: `Phase 1 passed=True` now, cleanly, on bridged
+   data (see the real run below) instead of the spurious `False` this
+   README previously reported.
 
 ## Real end-to-end run (verbatim numbers)
 
-Simulation run: `python run_simulation.py --seed 42 --population 300 --banks 4 --merchants 20 --days 90 --outdir output/bridge_run`
-(13,520 transactions, 300 persons, 20 merchants, 90 simulated days).
+**Simulation run**: `python run_simulation.py --seed 42 --population 300 --banks 4 --merchants 20 --days 90 --outdir output/bridge_run_device`
+(13,556 transactions, 300 persons, 20 merchants, 90 simulated days, 253 real Devices).
 
-Bridge run: `python -m financial_system.bridges.run_bridge Simulation/output/bridge_run financial_system/bridges/bridge_output`
+**Bridge run**: `python -m financial_system.bridges.run_bridge Simulation/output/bridge_run_device financial_system/bridges/bridge_output`
 
 ```
-[1/5] transforming Simulation/ output -> Heimdall raw schema
-      persons=300 merchants=20 transactions=13520
-      -> orders=9043 payments=9043 customers=300 merchants=20 devices(placeholder)=300 instruments(placeholder)=300
-      skipped non-purchase transaction kinds: {'org_funding': 6, 'salary': 900, 'savings_sweep': 900, 'household_sweep': 900, 'settlement': 1771}
+[1/6] transforming Simulation/ output (Simulation\output\bridge_run_device) -> Heimdall raw schema (financial_system\bridges\bridge_output\raw)
+      persons=300 merchants=20 transactions=13556 devices=253
+      -> orders=9080 payments=9080 customers=300 merchants=20 devices(real)=253 (of which shared by >=2 owners: 41) instruments(fabricated 1:1-per-device wrapper)=300
+      skipped non-purchase transaction kinds: {'org_funding': 6, 'salary': 900, 'savings_sweep': 900, 'household_sweep': 900, 'settlement': 1770}
 
-[2/5] financial_state.builder.build_financial_state() -- Heimdall's real, unmodified Phase 1
-      Phase 1 passed=False row_count_failures=11 checksum_failures=5
-      (see "honest gaps" #4 above -- ingestion itself is correct; the self-check compares
-      against the wrong, hardcoded directory)
+[2/6] financial_state.builder.build_financial_state() -- Heimdall's real, unmodified Phase 1
+      Phase 1 passed=True row_count_failures=0 checksum_failures=0
 
-[3/5] entity_resolution.given_matches -- Heimdall's real, unmodified Phase 2 (given-matches only)
+[3/6] entity_resolution.given_matches -- Heimdall's real, unmodified Phase 2 (given-matches only)
       reference-key violations: 0
-      given matches persisted: 36172 {'belongs_to': 9043, 'initiated_by': 9043, 'used_device': 9043, 'used_instrument': 9043}
+      given matches persisted: 36320 {'belongs_to': 9080, 'initiated_by': 9080, 'used_device': 9080, 'used_instrument': 9080}
 
-[4/5] financial_graph.builder.build_graph() -- Heimdall's real, unmodified Phase 3
-      node counts: {'Customer': 300, 'Device': 300, 'Merchant': 20, 'Order': 9043, 'Payment': 9043, 'PaymentInstrument': 300}
-      edge counts: {'belongs_to': 9043, 'initiated': 9043, 'used_device': 9043, 'used_instrument': 9043, 'uses': 600}
+[4/6] financial_graph.builder.build_graph() -- Heimdall's real, unmodified Phase 3
+      node counts: {'Customer': 300, 'Device': 253, 'Merchant': 20, 'Order': 9080, 'Payment': 9080, 'PaymentInstrument': 300}
+      edge counts: {'belongs_to': 9080, 'initiated': 9080, 'used_device': 9080, 'used_instrument': 9080, 'uses': 600}
 
-[5/5] recovery.recovery_agent.run_recovery_for_payment() -- Heimdall's real, unmodified Phase 7 agent
-      failed payments: 172
-      decision distribution: {'RETRY': 172}
-      proposed_action distribution: {'RETRY_LATER': 172}
+[5/6] recovery.recovery_agent.run_recovery_for_payment() -- Heimdall's real, unmodified Phase 7 agent, called on every bridged failed Payment
+      failed payments: 171
+      decision distribution: {'RETRY': 171}
+      proposed_action distribution: {'RETRY_LATER': 171}
+
+[6/6] risk.runner.devices_with_sharers() + risk.risk_agent.run_risk_for_device() -- Heimdall's real, unmodified Phase 6 agent, called on every bridged Device with >=2 owners
+      devices with >=2 distinct owning customers: 41
+      decision distribution: {'RELEASE': 35, 'REVIEW': 6}
+      decision_score range: 0.095 .. 0.550
 
 BRIDGE RUN: COMPLETE
 ```
 
-Every one of the 172 bridged failed payments got `decision_score = 0.45`
-(the `insufficient_funds` category's own historical base rate, read
-straight out of `FAILURE_TAXONOMY` -- unmodified) and
-`has_alternate_success = 0.0` (structural, see gap #3). This is not a
-degenerate bridge bug: it is the single, correct decision Heimdall's real
-Recovery logic makes given that `Simulation/` only ever produces one
-failure category. It is also exactly what should make anyone reading this
-honest about what this bridge does and does not prove: it proves real,
-working interoperation (unmodified Heimdall code making a real,
-correctly-reasoned decision on transformed simulated data, structurally
-distinct from Heimdall's own real 39.6%-false-retry-rate, seven-category
-result), not a rich exercise of Recovery's full decision surface.
+**Recovery (unchanged behavior from the original bridge, confirmed not
+regressed)**: every one of the 171 bridged failed payments got
+`decision_score = 0.45` (the `insufficient_funds` category's own
+historical base rate, read straight out of `FAILURE_TAXONOMY` --
+unmodified) and `has_alternate_success = 0.0` (structural, see gap #3).
+This is not a degenerate bridge bug: it is the single, correct decision
+Heimdall's real Recovery logic makes given that `Simulation/` only ever
+produces one failure category. (The count differs slightly from the
+original bridge session's 172 -- 171 here -- purely because this is a
+freshly regenerated Simulation run under the Device follow-on task's own
+engine changes, which add new RNG draws for device assignment; still the
+same seed=42/300-person/90-day parameters, still fully deterministic
+given that seed, not a sign of any regression -- see the Simulation-side
+determinism checks in the main task report.)
+
+**Risk (new, real result)**: of 41 real Devices shared by >=2 distinct
+Customers, Risk's real, unmodified scoring logic decided `RELEASE` for 35
+and `REVIEW` for 6 (`decision_score` range 0.095-0.550) -- **zero `HOLD`
+verdicts** (Risk's HIGH tier requires `decision_score >= 0.6`; the highest
+score observed here, 0.550, sits in MEDIUM). This is the honest,
+CORRECT result for genuinely-benign, non-fraud shared-device structure:
+`Simulation/` models real household device sharing (steady-state, ongoing
+use by cohabiting people) but no fraud-ring pattern at all (no burst of
+payments from a newly-created account, the actual signal that would drive
+a HIGH score in `risk/signals.py`) -- so Risk correctly finds nothing to
+escalate. This is not a null result to fix; it is exactly what proving
+"the plumbing is real" was supposed to look like on data that was never
+designed to contain fraud.
+
+Both runs together demonstrate real, working interoperation on BOTH
+domains now: unmodified Heimdall code making real, correctly-reasoned
+decisions on transformed simulated data -- structurally distinct from
+Heimdall's own real 39.6%-false-retry-rate/seven-category Recovery
+result and its own real 100.0%/96.3%/0.0% Risk result against actual
+fraud-ring ground truth, since neither seven failure categories nor any
+fraud ring exists in `Simulation/`'s data by design -- not a rich
+exercise of either domain's full decision surface, and not claimed to be.
 
 ## New files
 
 - `financial_system/bridges/__init__.py`
-- `financial_system/bridges/simulation_bridge.py` -- the transform (Simulation output -> Heimdall raw-CSV schema)
-- `financial_system/bridges/run_bridge.py` -- orchestrates the transform + calls Heimdall's real Phase 1/2/3/Recovery functions, unmodified
-- `financial_system/bridges/test_simulation_bridge.py` -- tests for the transform itself (5 tests, all passing)
+- `financial_system/bridges/simulation_bridge.py` -- the transform (Simulation output -> Heimdall raw-CSV schema; now includes real Device data, see "Part 2" above)
+- `financial_system/bridges/run_bridge.py` -- orchestrates the transform + calls Heimdall's real Phase 1/2/3/Recovery/Risk functions, unmodified
+- `financial_system/bridges/test_simulation_bridge.py` -- tests for the transform itself (6 tests, all passing)
 - `financial_system/bridges/README.md` -- this file
 - `financial_system/bridges/bridge_output/` -- one real generated run's output (raw CSVs + `financial_state.db` + `financial_graph.db`), regenerable by re-running the command above; not required to exist for the bridge code itself to work
 
-No file under `financial_system/` or `Simulation/` was modified.
+No file under `financial_system/`'s existing (non-`bridges/`) code, and no
+file under `Simulation/`'s existing engine/world code other than the
+explicitly-scoped Device addition (see the main task report / `Simulation/
+docs/Memory.md`'s "Device" section), was modified.

@@ -35,6 +35,18 @@ financial_system/data/ paths):
        (Phase 7's own done-check), since Discovery.AI/LLM investigation is
        out of scope for this bridge.
 
+  6. financial_system.risk.runner.devices_with_sharers() +
+     financial_system.risk.risk_agent.run_risk_for_device()  [EXISTING, unmodified]
+       Later addition (see Simulation/docs/Memory.md's "Device" section):
+       now that simulation_bridge.py builds devices.csv from Simulation/'s
+       REAL Device data (real household-sharing structure, not one
+       placeholder per person), Risk's real, unmodified scoring logic can
+       run meaningfully on bridged data for the first time. Called on
+       every Device with >=2 distinct owning Customers (Risk's own real
+       definition of "has any signal to score at all" --
+       risk/runner.py's `devices_with_sharers`), investigate=False, same
+       4A-only default as risk/runner.py's own Phase 6 done-check.
+
 Run directly: `python -m financial_system.bridges.run_bridge <simulation_outdir> [bridge_outdir]`
 """
 from __future__ import annotations
@@ -49,6 +61,8 @@ from financial_system.financial_graph.builder import build_graph
 from financial_system.financial_state.builder import build_financial_state
 from financial_system.financial_state.store import FinancialStateStore
 from financial_system.recovery.recovery_agent import run_recovery_for_payment
+from financial_system.risk.risk_agent import run_risk_for_device
+from financial_system.risk.runner import devices_with_sharers
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parent / "bridge_output"
@@ -61,17 +75,18 @@ def run_bridge(sim_outdir: Path, bridge_dir: Path = DEFAULT_BRIDGE_DIR) -> dict:
     graph_db = bridge_dir / "financial_graph.db"
     bridge_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] transforming Simulation/ output ({sim_outdir}) -> Heimdall raw schema ({raw_dir})")
+    print(f"[1/6] transforming Simulation/ output ({sim_outdir}) -> Heimdall raw schema ({raw_dir})")
     transform_report = transform_simulation_output(sim_outdir, raw_dir)
     print(f"      persons={transform_report.persons_read} merchants={transform_report.merchants_read} "
-          f"transactions={transform_report.transactions_read}")
+          f"transactions={transform_report.transactions_read} devices={transform_report.devices_read}")
     print(f"      -> orders={transform_report.orders_written} payments={transform_report.payments_written} "
           f"customers={transform_report.customers_written} merchants={transform_report.merchants_written} "
-          f"devices(placeholder)={transform_report.devices_written} "
-          f"instruments(placeholder)={transform_report.instruments_written}")
+          f"devices(real)={transform_report.devices_written} "
+          f"(of which shared by >=2 owners: {transform_report.shared_devices}) "
+          f"instruments(fabricated 1:1-per-device wrapper)={transform_report.instruments_written}")
     print(f"      skipped non-purchase transaction kinds: {dict(transform_report.skipped_transaction_kinds)}")
 
-    print(f"\n[2/5] financial_state.builder.build_financial_state() -- Heimdall's real, unmodified Phase 1")
+    print(f"\n[2/6] financial_state.builder.build_financial_state() -- Heimdall's real, unmodified Phase 1")
     store, phase1_result = build_financial_state(db_path=state_db, raw_dir=raw_dir)
     print(f"      Phase 1 passed={phase1_result.passed} "
           f"row_count_failures={len(phase1_result.row_count_failures)} "
@@ -80,7 +95,7 @@ def run_bridge(sim_outdir: Path, bridge_dir: Path = DEFAULT_BRIDGE_DIR) -> dict:
         print(f"      row_count_failures: {phase1_result.row_count_failures}")
         print(f"      checksum_failures: {phase1_result.checksum_failures}")
 
-    print(f"\n[3/5] entity_resolution.given_matches -- Heimdall's real, unmodified Phase 2 (given-matches only)")
+    print(f"\n[3/6] entity_resolution.given_matches -- Heimdall's real, unmodified Phase 2 (given-matches only)")
     violations = validate_reference_keys(store)
     given = resolve_given_matches(store)
     store.clear_entity_matches()
@@ -93,12 +108,12 @@ def run_bridge(sim_outdir: Path, bridge_dir: Path = DEFAULT_BRIDGE_DIR) -> dict:
     by_relation = Counter(m.relation for m in given)
     print(f"      given matches persisted: {len(given)} {dict(by_relation)}")
 
-    print(f"\n[4/5] financial_graph.builder.build_graph() -- Heimdall's real, unmodified Phase 3")
+    print(f"\n[4/6] financial_graph.builder.build_graph() -- Heimdall's real, unmodified Phase 3")
     _, graph = build_graph(state_db=state_db, graph_db=graph_db)
     print(f"      node counts: {dict(graph.node_type_counts())}")
     print(f"      edge counts: {dict(graph.relation_counts())}")
 
-    print(f"\n[5/5] recovery.recovery_agent.run_recovery_for_payment() -- Heimdall's real, unmodified Phase 7 "
+    print(f"\n[5/6] recovery.recovery_agent.run_recovery_for_payment() -- Heimdall's real, unmodified Phase 7 "
           f"agent, called on every bridged failed Payment")
     failed_payment_ids = [
         r["payment_id"] for r in store.all_rows("payments") if r["status"] == "failed"
@@ -116,6 +131,22 @@ def run_bridge(sim_outdir: Path, bridge_dir: Path = DEFAULT_BRIDGE_DIR) -> dict:
     print(f"      decision distribution: {dict(decisions)}")
     print(f"      proposed_action distribution: {dict(proposed_actions)}")
 
+    print(f"\n[6/6] risk.runner.devices_with_sharers() + risk.risk_agent.run_risk_for_device() -- "
+          f"Heimdall's real, unmodified Phase 6 agent, called on every bridged Device with >=2 owners")
+    shared_device_ids = devices_with_sharers(graph)
+    risk_decisions = Counter()
+    risk_verdicts = []
+    for device_id in shared_device_ids:
+        verdict = run_risk_for_device(graph, device_id, investigate=False)
+        risk_decisions[verdict.decision] += 1
+        risk_verdicts.append(verdict)
+
+    print(f"      devices with >=2 distinct owning customers: {len(shared_device_ids)}")
+    print(f"      decision distribution: {dict(risk_decisions)}")
+    if risk_verdicts:
+        scores = [v.decision_score for v in risk_verdicts]
+        print(f"      decision_score range: {min(scores):.3f} .. {max(scores):.3f}")
+
     return {
         "transform_report": transform_report,
         "phase1_result": phase1_result,
@@ -126,6 +157,9 @@ def run_bridge(sim_outdir: Path, bridge_dir: Path = DEFAULT_BRIDGE_DIR) -> dict:
         "decisions": decisions,
         "proposed_actions": proposed_actions,
         "verdicts": verdicts,
+        "shared_device_ids": shared_device_ids,
+        "risk_decisions": risk_decisions,
+        "risk_verdicts": risk_verdicts,
     }
 
 
